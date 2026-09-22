@@ -1,0 +1,35 @@
+# alobo-bot configuration.
+# Every value here overrides a built-in default; delete a key to go back to the default.
+# Relative paths resolve against the project root. No secrets live here: the
+# AloBooking app key below is a public value baked into the web app itself.
+
+api:
+  # Cloudflare blocks plain HTTP clients on the *.alobo.vn API hosts, so the bot
+  # talks to the same backends through their Cloud Run origins, which serve the
+  # identical API without the bot check.
+  base_url: https://user-app-new-vk7r7j5t3q-uc.a.run.app   # user-api-new.alobo.vn
+  global_url: https://user-app-vk7r7j5t3q-uc.a.run.app     # user-global.alobo.vn
+  app_name: alobo-user
+  platform: web
+  version: "2.10.3"          # x-version-app, mirrors the web app build
+  lang: vi                   # vi | en
+  app_key: Alobo-User-Key-2026   # signature key (public, see src/alobo_bot/crypto.py)
+  timeout_seconds: 30
+  delay_min_seconds: 0.3     # politeness pause between API calls
+  delay_max_seconds: 0.8
+  max_retries: 3
+
+search:
+  sport: pickleball         # sport key to price (see `alobo-bot sports`)
+  default_place: Hà Nội     # used when neither --place nor --lat/--lng is given
+  radius_km: 10.0           # max distance from --lat/--lng (ignored for text places)
+  max_branches: 25          # cap on branches enriched with courts/prices per run
+  workers: 6                # branches priced in parallel (each needs 2 API calls)
+  # How many branches the search endpoint returns in one page.
+  page_size: 100
+
+report:
+  dir: data/reports         # latest report (md + json), overwritten each run
+
+raw:
+  dir: data/raw             # dated JSON snapshots of each run
