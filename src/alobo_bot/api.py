@@ -4,11 +4,13 @@ All calls go to the Cloud Run origins of the two AloBooking backends (see
 ``config.yaml``): the ``*.alobo.vn`` hosts sit behind a Cloudflare bot check
 that rejects non-browser clients (error 1010), while the Cloud Run origins serve
 the identical API. Every request carries the app headers and a fresh
-``x-user-app`` signature; POST bodies are AES-encrypted (see :mod:`crypto`).
+``x-user-app`` signature; POST bodies are AES-encrypted and responses are
+AES-decrypted (see :mod:`crypto`).
 """
 
 from __future__ import annotations
 
+import datetime as dt
 import json
 import random
 import time
@@ -19,7 +21,7 @@ from typing import Any
 
 from . import __version__
 from .crypto import decrypt_body, encrypt_body, signature
-from .models import Branch, Core, CoreType, SocialSession, SportType, _parse_dt  # noqa: F401
+from .models import Booking, Branch, Core, CoreType, SocialSession, SportType, _parse_dt  # noqa: F401
 
 
 class ApiError(RuntimeError):
@@ -27,7 +29,7 @@ class ApiError(RuntimeError):
 
 
 class AloboClient:
-    """Stateless-ish client; holds config and a single urllib opener."""
+    """Stateless-ish client; holds config and one opener. Every endpoint it calls is public."""
 
     def __init__(self, cfg: dict):
         api = cfg["api"]
@@ -47,7 +49,7 @@ class AloboClient:
     # ------------------------------------------------------------------ core
 
     def _headers(self) -> dict[str, str]:
-        return {
+        headers = {
             "Accept": "application/json, text/plain, */*",
             "Accept-Language": "vi,en;q=0.9",
             "Accept-Encoding": "identity",
@@ -60,6 +62,7 @@ class AloboClient:
             "Origin": "https://datlich.alobo.vn",
             "Referer": "https://datlich.alobo.vn/",
         }
+        return headers
 
     def _sleep(self) -> None:
         if self.delay_max > 0:
@@ -98,11 +101,13 @@ class AloboClient:
                 return self._decode(raw)
             except urllib.error.HTTPError as exc:  # noqa: PERF203 - retry loop
                 detail = exc.read().decode("utf-8", errors="replace")[:300]
-                # A stale clock is the one 401 the caller can fix.
+                # The signing clock is UTC and the server allows ~2 minutes of
+                # skew; a skewed or venue-local clock is the one 401 the caller can fix.
                 if exc.code == 401 and "thời gian" in detail:
                     raise ApiError(
-                        "AloBooking rejected the request timestamp — check the "
-                        "system clock is correct and in a Vietnamese timezone."
+                        "AloBooking rejected the request timestamp — the signing "
+                        "clock must be UTC within a couple of minutes. Check the "
+                        "host clock is NTP-synced and that TZ is not shifting it."
                     ) from exc
                 if exc.code in (403, 404, 400):
                     raise ApiError(f"HTTP {exc.code} for {url}: {detail}") from exc
@@ -201,6 +206,39 @@ class AloboClient:
         payload = self.request(f"{self.global_url}/v2/user/branch/get_lock_yards/{branch_id}")
         data = self._data(payload)
         return list(data or [])
+
+    def get_onetime_bookings(self, branch_id: str, day: dt.date) -> list[Booking]:
+        """The bookings a branch has already taken on *day*.
+
+        Public — no login — and the source of truth for court availability: a
+        court is free for a window when none of these bookings overlaps it.
+
+        *day* is the venue's local calendar day. The API answers a day outside
+        the branch's booking window (in the past, or too far ahead) with ``400``,
+        so callers must treat a failure as "unknown", not as "booked" — see
+        :mod:`alobo_bot.availability`.
+        """
+        payload = self.request(
+            f"{self.global_url}/v2/user/branch/get_onetime_bookings",
+            params={"branchId": branch_id, "startDate": day.isoformat(), "endDate": day.isoformat()},
+        )
+        legs: list[Booking] = []
+        for item in self._data(payload) or []:
+            legs.extend(Booking.from_api(item))
+        return legs
+
+    def check_booking(self, branch_id: str, core_id: str, phone: str | None = None) -> bool:
+        """Whether *phone* already has a booking on this court.
+
+        Public and account-free, but it answers for one phone number rather than
+        for a time window, so it cannot tell whether a slot is free.
+        """
+        payload = self.request(
+            f"{self.global_url}/v2/user/branch/check_booking/{branch_id}/core/{core_id}",
+            params={"phone": phone} if phone else None,
+        )
+        data = self._data(payload)
+        return bool(data.get("isCheckBooking")) if isinstance(data, dict) else False
 
     def branch_booking_search(
         self,

@@ -6,14 +6,16 @@
 api:
   # Cloudflare blocks plain HTTP clients on the *.alobo.vn API hosts, so the bot
   # talks to the same backends through their Cloud Run origins, which serve the
-  # identical API without the bot check.
-  base_url: https://user-app-new-vk7r7j5t3q-uc.a.run.app   # user-api-new.alobo.vn
-  global_url: https://user-app-vk7r7j5t3q-uc.a.run.app     # user-global.alobo.vn
+  # identical API without the bot check. These origins and the app_key below are
+  # per app release: when the web app ships a new build, re-derive them — see
+  # docs/updating-api-keys.md.
+  base_url: https://user-app-new-ootprnz4oa-uc.a.run.app   # user-api-new.alobo.vn
+  global_url: https://user-global-ootprnz4oa-uc.a.run.app  # user-global.alobo.vn
   app_name: alobo-user
   platform: web
   version: "2.10.3"          # x-version-app, mirrors the web app build
   lang: vi                   # vi | en
-  app_key: Alobo-User-Key-2026   # signature key (public, see src/alobo_bot/crypto.py)
+  app_key: 935b1fccd4bc45a12af095bf0bafa723   # signature key (public, see src/alobo_bot/crypto.py)
   timeout_seconds: 30
   delay_min_seconds: 0.3     # politeness pause between API calls
   delay_max_seconds: 0.8
@@ -22,11 +24,48 @@ api:
 search:
   sport: pickleball         # sport key to price (see `alobo-bot sports`)
   default_place: Hà Nội     # used when neither --place nor --lat/--lng is given
-  radius_km: 10.0           # max distance from --lat/--lng (ignored for text places)
+  radius_km: 3.0            # max distance from --lat/--lng (ignored for text places)
   max_branches: 25          # cap on branches enriched with courts/prices per run
-  workers: 6                # branches priced in parallel (each needs 2 API calls)
+  workers: 6                # branches priced in parallel (each needs 3 API calls)
+  # Which categories a run reports, cheapest first within each:
+  #   all    - both below
+  #   social - "xé vé": tickets to sessions, priced per person (socialOneTime)
+  #   court  - whole courts, priced per court (oneTime)
+  # The web page's Category control and `find --category` override this per run.
+  category: all
+  # Court availability, read from the branch's public booking list:
+  #   any  - keep courts that are only partly free, quoted for their open part (default)
+  #   free - only courts free for the whole window
+  # A court with no open time left is never listed: there is no price to quote.
+  # The web page's Availability control and `find --availability` override this.
+  availability: any
+  # Which tariff ("đối tượng áp dụng") to price courts under: a target id or name
+  # as published by get_core_types, e.g. "kh". Blank uses each type's generic
+  # customer tariff. `find --target` overrides it for one run; the web page always
+  # uses this value and offers no control, so every visitor sees the same prices.
+  target:
   # How many branches the search endpoint returns in one page.
   page_size: 100
+  # Suggestions for the web page's Area dropdown. The field still accepts any
+  # free-text area; this only seeds the list. Add/remove Hanoi districts here.
+  areas:
+    - Hà Nội
+    - Ba Đình, Hà Nội
+    - Hoàn Kiếm, Hà Nội
+    - Tây Hồ, Hà Nội
+    - Long Biên, Hà Nội
+    - Cầu Giấy, Hà Nội
+    - Đống Đa, Hà Nội
+    - Hai Bà Trưng, Hà Nội
+    - Hoàng Mai, Hà Nội
+    - Thanh Xuân, Hà Nội
+    - Nam Từ Liêm, Hà Nội
+    - Bắc Từ Liêm, Hà Nội
+    - Hà Đông, Hà Nội
+    - Hoài Đức, Hà Nội
+    - Gia Lâm, Hà Nội
+    - Thanh Trì, Hà Nội
+    - Đông Anh, Hà Nội
 
 report:
   dir: data/reports         # latest report (md + json), overwritten each run

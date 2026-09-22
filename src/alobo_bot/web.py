@@ -48,6 +48,10 @@ def create_app() -> Any:
     cfg = load_config()
     validate(cfg)
     report_dir = pathlib.Path(cfg["report"]["dir"])
+    raw_areas = cfg["search"].get("areas") or []
+    areas = [str(area) for area in raw_areas] if isinstance(raw_areas, list) else []
+    default_category = str(cfg["search"].get("category") or "all")
+    default_availability = str(cfg["search"].get("availability") or "any")
 
     state: dict[str, Any] = {
         "lock": asyncio.Lock(),
@@ -94,7 +98,13 @@ def create_app() -> Any:
         status: int = 200,
     ) -> Response:
         return HTMLResponse(
-            render_page(sports=sports_options(), query=raw_query, result=result, error=error),
+            render_page(
+                sports=sports_options(),
+                areas=areas,
+                query=raw_query,
+                result=result,
+                error=error,
+            ),
             status_code=status,
         )
 
@@ -109,11 +119,15 @@ def create_app() -> Any:
         time_to: str = Query("21:00", alias="to"),
         sport: str | None = None,
         limit: int | None = None,
+        category: str | None = None,
+        availability: str | None = None,
     ) -> Response:
         raw = {
             "place": place, "lat": lat, "lng": lng, "radius": radius,
             "date": date, "from": time_from, "to": time_to,
             "sport": sport, "limit": limit,
+            "category": category or default_category,
+            "availability": availability or default_availability,
         }
         if not has_search_params(place=place, lat=lat, lng=lng):
             return _render(raw_query=raw)
@@ -122,12 +136,13 @@ def create_app() -> Any:
             result = await _run_find(
                 place=place, latitude=lat, longitude=lng, radius_km=radius, day=day,
                 start_minute=parse_clock(time_from), end_minute=parse_clock(time_to),
-                sport=sport, max_branches=limit,
+                sport=sport, max_branches=limit, category=category,
+                availability=availability,
             )
         except (ClockError, ValueError) as exc:
             return _render(raw_query=raw, error=str(exc), status=400)
         except ApiError as exc:
-            return _render(raw_query=raw, error=f"không gọi được API: {exc}", status=502)
+            return _render(raw_query=raw, error=f"could not reach the API: {exc}", status=502)
         except RuntimeError as exc:
             return _render(raw_query=raw, error=str(exc), status=409)
         return _render(raw_query=raw, result=result)
@@ -143,6 +158,8 @@ def create_app() -> Any:
         time_to: str = Query("21:00", alias="to"),
         sport: str | None = None,
         limit: int | None = None,
+        category: str | None = None,
+        availability: str | None = None,
     ) -> Response:
         """Machine-readable variant of the same search (markdown body)."""
         try:
@@ -150,7 +167,8 @@ def create_app() -> Any:
             result = await _run_find(
                 place=place, latitude=lat, longitude=lng, radius_km=radius, day=day,
                 start_minute=parse_clock(time_from), end_minute=parse_clock(time_to),
-                sport=sport, max_branches=limit,
+                sport=sport, max_branches=limit, category=category,
+                availability=availability,
             )
         except (ClockError, ValueError) as exc:
             return PlainTextResponse(f"invalid request: {exc}", status_code=400)

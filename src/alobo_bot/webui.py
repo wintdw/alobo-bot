@@ -8,33 +8,76 @@ only add a "searching…" state to the form.
 
 from __future__ import annotations
 
+import datetime as dt
 import html
+import urllib.parse
 
-from .report import money
+from .report import hours_label, money
+from .availability import label as availability_label
 from .search import FindResult
 
 MONTHS = "01 02 03 04 05 06 07 08 09 10 11 12".split()
 
+BRAND = "Alobo"
+BRAND_TAGLINE = "Cheapest pickleball courts"
+
+
+def logo_svg(badge: str, ball: str) -> str:
+    """The brand mark: a pickleball on a rounded badge.
+
+    Inline so the page carries no image request and no build step. The header
+    copy fills it with the theme's own accent variables, so it follows the
+    light/dark switch; the favicon pins the light-theme colours because it is
+    rendered outside the page and has no CSS to inherit.
+    """
+    return (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" '
+        'aria-hidden="true" focusable="false">'
+        f'<rect width="32" height="32" rx="8" fill="{badge}"/>'
+        f'<circle cx="16" cy="16" r="9" fill="{ball}"/>'
+        f'<g fill="{badge}">'
+        '<circle cx="12.7" cy="12.7" r="2.3"/><circle cx="19.3" cy="12.7" r="2.3"/>'
+        '<circle cx="12.7" cy="19.3" r="2.3"/><circle cx="19.3" cy="19.3" r="2.3"/>'
+        "</g></svg>"
+    )
+
+
+LOGO = logo_svg("var(--accent)", "var(--accent-fg)")
+FAVICON = "data:image/svg+xml," + urllib.parse.quote(logo_svg("#0b6b53", "#ffffff"))
+
 STYLE = """
 :root {
   color-scheme: light dark;
-  --bg: #f6f7f9; --fg: #16181d; --muted: #5b6472; --card: #ffffff;
-  --line: #e2e5ea; --accent: #0b6b53; --accent-fg: #ffffff; --warn: #8a1c1c;
-  --radius: 10px;
+  --bg: #f4f6f8; --fg: #14171c; --muted: #5b6472; --card: #ffffff;
+  --line: #e4e7ec; --line-strong: #ccd2da;
+  --accent: #0b6b53; --accent-hover: #095742; --accent-fg: #ffffff; --warn: #8a1c1c;
+  --radius: 12px; --radius-sm: 8px;
+  --shadow: 0 1px 2px rgba(16, 24, 40, .05), 0 1px 3px rgba(16, 24, 40, .06);
 }
 @media (prefers-color-scheme: dark) {
-  :root { --bg:#101317; --fg:#e8ebef; --muted:#9aa4b2; --card:#181c22;
-          --line:#2a313a; --accent:#2ea884; --accent-fg:#08150f; --warn:#ff9c9c; }
+  :root { --bg:#0f1216; --fg:#e8ebef; --muted:#9aa4b2; --card:#171b21;
+          --line:#272e37; --line-strong:#3a434f;
+          --accent:#2ea884; --accent-hover:#3cbf98; --accent-fg:#08150f; --warn:#ff9c9c;
+          --shadow: 0 1px 2px rgba(0, 0, 0, .45); }
 }
 * { box-sizing: border-box; }
 body { margin:0; background:var(--bg); color:var(--fg);
   font: 16px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
 a { color: var(--accent); }
-header, main, footer { max-width: 60rem; margin-inline: auto; padding-inline: 1rem; }
-header { padding-block: 1.5rem 0.5rem; }
-h1 { font-size: 1.4rem; margin: 0 0 .25rem; }
-h2 { font-size: 1.05rem; margin: 1.75rem 0 .5rem; }
-p.sub { color: var(--muted); margin: 0; }
+header, main, footer { max-width: 62rem; margin-inline: auto; padding-inline: 1rem; }
+header { padding-block: 1.75rem 0.75rem; }
+h1 { font-size: 1.5rem; letter-spacing: -.01em; margin: 0 0 .3rem; }
+h1 a { display: inline-flex; align-items: center; gap: .5rem;
+  color: inherit; text-decoration: none; }
+h1 svg { inline-size: 1.75rem; block-size: 1.75rem; flex: none; }
+h1 a:hover { color: var(--accent); }
+h2 { font-size: 1.05rem; margin: 1.9rem 0 .6rem; }
+h3.category { display:flex; flex-wrap:wrap; align-items:baseline; gap:.55rem;
+  font-size:.95rem; margin:1.7rem 0 .6rem; }
+h3.category .unit { font-size:.8rem; font-weight:500; color:var(--muted); }
+h3.category .count { margin-inline-start:auto; font-size:.8rem; font-weight:700;
+  font-variant-numeric:tabular-nums; color:var(--accent); }
+p.sub { color: var(--muted); margin: 0; max-width: 46rem; }
 .visually-hidden:where(:not(:focus-within, :active)) {
   position:absolute !important; clip-path: inset(50%) !important; overflow:hidden !important;
   width:1px !important; height:1px !important; margin:-1px !important; padding:0 !important;
@@ -45,17 +88,39 @@ p.sub { color: var(--muted); margin: 0; }
   color:var(--accent-fg); border-radius:var(--radius); }
 :where(a, button, input, select):focus-visible { outline:3px solid var(--accent); outline-offset:2px; }
 .card { background:var(--card); border:1px solid var(--line); border-radius:var(--radius);
-  padding:1rem; }
-form { display:grid; gap:.85rem 1rem; grid-template-columns:repeat(auto-fit, minmax(11rem, 1fr)); }
+  padding:1.25rem; box-shadow: var(--shadow); }
+form { display:block; }
+.group + .group { margin-block-start:1.2rem; padding-block-start:1.2rem;
+  border-block-start:1px solid var(--line); }
+.group-title { margin:0 0 .7rem; font-size:.78rem; font-weight:700; text-transform:uppercase;
+  letter-spacing:.06em; color:var(--muted); }
+.group-fields { display:grid; gap:.85rem 1rem;
+  grid-template-columns:repeat(auto-fit, minmax(11rem, 1fr)); }
 .field { display:flex; flex-direction:column; gap:.25rem; min-inline-size:0; }
 .field.wide { grid-column: 1 / -1; }
 label { font-weight:600; font-size:.85rem; }
 .hint { color:var(--muted); font-size:.78rem; }
-input, select { font:inherit; padding:.5rem .6rem; border:1px solid var(--line);
-  border-radius:8px; background:var(--bg); color:var(--fg); min-inline-size:0; }
-button { font:inherit; font-weight:600; padding:.6rem 1.1rem; border:0; border-radius:8px;
-  background:var(--accent); color:var(--accent-fg); cursor:pointer; }
-.actions { display:flex; align-items:center; gap:.75rem; grid-column:1 / -1; }
+input, select { font:inherit; padding:.55rem .65rem; border:1px solid var(--line-strong);
+  border-radius:var(--radius-sm); background:var(--bg); color:var(--fg); min-inline-size:0; }
+input:hover, select:hover {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--line-strong)); }
+button { font:inherit; font-weight:600; padding:.62rem 1.15rem; border:1px solid transparent;
+  border-radius:var(--radius-sm); cursor:pointer;
+  transition: background .15s ease, border-color .15s ease, color .15s ease; }
+button:active:not(:disabled) { transform: translateY(1px); }
+button:disabled { opacity:.55; cursor:progress; }
+.btn-primary { background:var(--accent); color:var(--accent-fg); border-color:var(--accent); }
+.btn-primary:hover:not(:disabled) {
+  background:var(--accent-hover); border-color:var(--accent-hover); }
+.btn-secondary { background:transparent; color:var(--fg); border-color:var(--line-strong); }
+.btn-secondary:hover:not(:disabled) { border-color:var(--accent); color:var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.actions { display:flex; flex-wrap:wrap; align-items:center; gap:.6rem;
+  margin-block-start:1.3rem; padding-block-start:1.2rem; border-block-start:1px solid var(--line); }
+.actions .hint { margin:0; }
+.actions .note { margin-inline-start:auto; }
+.geo-status { margin:.5rem 0 0; }
+.geo-status:empty { display:none; }
 .table-wrap { overflow-x:auto; border:1px solid var(--line); border-radius:var(--radius);
   background:var(--card); }
 table { border-collapse:collapse; inline-size:100%; font-size:.9rem; }
@@ -64,7 +129,14 @@ th, td { padding:.5rem .9rem; text-align:left; border-top:1px solid var(--line);
 thead th { border-top:0; background:color-mix(in srgb, var(--line) 35%, transparent);
   position:sticky; top:0; }
 td.num, th.num { text-align:right; font-variant-numeric:tabular-nums; }
+td.status { white-space:nowrap; font-size:.82rem; font-weight:600; }
+td.tariff { font-size:.82rem; color:var(--muted); }
+td.status-free { color: var(--accent); }
+td.status-partial { color: var(--fg); }
+td.status-booked { color: var(--warn); }
+td.status-unknown { color: var(--muted); font-weight:500; }
 tr.top td { font-weight:600; }
+tbody tr:hover td { background:color-mix(in srgb, var(--accent) 6%, transparent); }
 .rank { color:var(--muted); }
 .empty, .error { border-radius:var(--radius); padding:.9rem 1rem; }
 .empty { background:var(--card); border:1px solid var(--line); color:var(--muted); }
@@ -80,9 +152,68 @@ addEventListener('submit', (e) => {
   const btn = form.querySelector('button[type=submit]');
   if (!btn) return;
   btn.disabled = true;
-  btn.textContent = 'Đang tìm… / Searching…';
+  btn.textContent = 'Searching…';
   form.setAttribute('aria-busy', 'true');
 });
+
+// Progressive enhancement: the geolocation button stays hidden unless the
+// browser supports it, so without JS the form is unchanged (type a place by hand).
+// It fills the coordinates and names the area from them; the search runs when
+// the user submits.
+const GEOCODER = 'https://api.bigdatacloud.net/data/reverse-geocode-client';
+
+// "Cầu Giấy, Hà Nội" from the free key-less geocoder's reply.
+function areaFromGeocode(data) {
+  const city = data.city || data.principalSubdivision || '';
+  const local = data.locality || '';
+  if (local && local !== city) return local + ', ' + city;
+  return city || local;
+}
+
+async function reverseGeocode(latitude, longitude) {
+  const url = GEOCODER + '?latitude=' + latitude + '&longitude=' + longitude
+    + '&localityLanguage=vi';
+  const response = await fetch(url);
+  if (!response.ok) return '';
+  return areaFromGeocode(await response.json());
+}
+
+const geoBtn = document.getElementById('geo');
+const geoStatus = document.getElementById('geo-status');
+if (geoBtn && navigator.geolocation) {
+  geoBtn.hidden = false;
+  geoBtn.addEventListener('click', () => {
+    geoBtn.disabled = true;
+    if (geoStatus) geoStatus.textContent = 'Getting your location…';
+    navigator.geolocation.getCurrentPosition(
+      async (pos) => {
+        const latitude = pos.coords.latitude.toFixed(6);
+        const longitude = pos.coords.longitude.toFixed(6);
+        document.getElementById('lat').value = latitude;
+        document.getElementById('lng').value = longitude;
+        if (geoStatus) geoStatus.textContent = 'Naming your area…';
+        let area = '';
+        try {
+          area = await reverseGeocode(latitude, longitude);
+        } catch (err) {
+          area = '';
+        }
+        const place = document.getElementById('place');
+        if (place && area) place.value = area;
+        geoBtn.disabled = false;
+        if (geoStatus) geoStatus.textContent = area
+          ? 'Area set to "' + area + '" — press "Find" to search.'
+          : 'Location filled in — press "Find" to search.';
+      },
+      (err) => {
+        geoBtn.disabled = false;
+        if (geoStatus) geoStatus.textContent =
+          'Could not get your location (' + err.message + '). Enter an area manually.';
+      },
+      { maximumAge: 300000, timeout: 10000 }
+    );
+  });
+}
 """.strip()
 
 
@@ -100,109 +231,218 @@ def field(
     placeholder: str = "",
     step: str = "",
     wide: bool = False,
+    options: list[str] | None = None,
 ) -> str:
-    """One labelled control, with its hint wired up via aria-describedby."""
+    """One labelled control, with its hint wired up via aria-describedby.
+
+    With *options* the input also offers a native suggestion dropdown (a
+    ``<datalist>``): clicking shows the list, typing filters it, and any value
+    outside the list is still accepted.
+    """
     described = f' aria-describedby="{name}-hint"' if hint else ""
     step_attr = f' step="{step}"' if step else ""
     placeholder_attr = f' placeholder="{esc(placeholder)}"' if placeholder else ""
     hint_html = f'<span class="hint" id="{name}-hint">{esc(hint)}</span>' if hint else ""
+    list_attr = ""
+    datalist = ""
+    if options:
+        list_id = f"{name}-options"
+        list_attr = f' list="{list_id}"'
+        items = "".join(f'<option value="{esc(option)}"></option>' for option in options)
+        datalist = f'<datalist id="{list_id}">{items}</datalist>'
     return f"""<div class="field{' wide' if wide else ''}">
   <label for="{name}">{esc(label)}</label>
-  <input id="{name}" name="{name}" type="{type}" value="{esc(value)}"{step_attr}{placeholder_attr}{described}>
+  <input id="{name}" name="{name}" type="{type}" value="{esc(value)}"{step_attr}{placeholder_attr}{list_attr}{described}>
+  {hint_html}{datalist}
+</div>"""
+
+
+def select_field(
+    name: str,
+    label: str,
+    options: list[tuple[str, str]],
+    selected: str,
+    hint: str = "",
+) -> str:
+    """One labelled ``<select>``, its hint wired up via aria-describedby."""
+    body = "".join(
+        f'<option value="{esc(value)}"{" selected" if value == selected else ""}>{esc(text)}</option>'
+        for value, text in options
+    )
+    described = f' aria-describedby="{name}-hint"' if hint else ""
+    hint_html = f'<span class="hint" id="{name}-hint">{esc(hint)}</span>' if hint else ""
+    return f"""<div class="field">
+  <label for="{name}">{esc(label)}</label>
+  <select id="{name}" name="{name}"{described}>{body}</select>
   {hint_html}
 </div>"""
 
 
-def sport_select(sports: list[tuple[str, str]], selected: str) -> str:
-    options = "".join(
-        f'<option value="{esc(key)}"{" selected" if key == selected else ""}>{esc(name)}</option>'
-        for key, name in sports
-    )
-    return f"""<div class="field">
-  <label for="sport">Môn / Sport</label>
-  <select id="sport" name="sport">{options}</select>
-  <span class="hint" id="sport-hint">Chỉ hỗ trợ các môn có sân cho thuê theo giờ.</span>
+SPORT_OPTIONS_HINT = "Only sports with hourly court rentals are supported."
+
+# Order is the display order of the categories in the results: tickets first.
+CATEGORY_OPTIONS = [
+    ("all", "Both — tickets and courts"),
+    ("social", "Tickets only — xé vé (per person)"),
+    ("court", "Courts only (per court)"),
+]
+
+AVAILABILITY_OPTIONS = [
+    ("any", "Any — quote a partly-free court for its open part"),
+    ("free", "Free only — courts open for the whole window"),
+]
+
+
+def group(title: str, key: str, *fields: str) -> str:
+    """A titled block of related controls (its own responsive grid)."""
+    return f"""<div class="group">
+  <h3 class="group-title" id="{key}-title">{esc(title)}</h3>
+  <div class="group-fields" role="group" aria-labelledby="{key}-title">
+    {''.join(fields)}
+  </div>
 </div>"""
 
 
-def render_form(query: dict, sports: list[tuple[str, str]]) -> str:
+def render_form(query: dict, sports: list[tuple[str, str]], areas: list[str]) -> str:
     return f"""<form method="get" action="/" class="card">
-  {field("place", "Khu vực / Area", query.get("place") or "", wide=True,
-         hint="Tên đường, quận, thành phố — hoặc để trống và dùng toạ độ.",
-         placeholder="Cầu Giấy, Hà Nội")}
-  {field("lat", "Vĩ độ / Latitude", query.get("lat") or "", type="number", step="any",
-         hint="Để trống nếu tìm theo tên khu vực.")}
-  {field("lng", "Kinh độ / Longitude", query.get("lng") or "", type="number", step="any",
-         hint="Cần nhập cùng với vĩ độ.")}
-  {field("radius", "Bán kính / Radius", query.get("radius") or "", type="number", step="any",
-         hint="km, chỉ dùng khi có toạ độ.")}
-  {field("date", "Ngày / Date", query.get("date") or "", type="date",
-         hint="Mặc định là hôm nay.")}
-  {field("from", "Từ / From", query.get("from") or "18:00", placeholder="18:00")}
-  {field("to", "Đến / To", query.get("to") or "21:00", placeholder="21:00")}
-  {sport_select(sports, query.get("sport") or "pickleball")}
+  {group(
+      "Where", "where",
+      field("place", "Area", query.get("place") or "", wide=True,
+            options=areas,
+            hint="Pick a Hanoi district, or type any address. Leave blank to use your current location.",
+            placeholder="Cầu Giấy, Hà Nội"),
+      field("lat", "Latitude", query.get("lat") or "", type="number", step="any",
+            hint="Leave blank when searching by area name."),
+      field("lng", "Longitude", query.get("lng") or "", type="number", step="any",
+            hint="Required together with latitude."),
+      field("radius", "Radius", query.get("radius") or "3", type="number", step="any",
+            hint="km, only used with coordinates."),
+  )}
+  {group(
+      "When", "when",
+      field("date", "Date", query.get("date") or dt.date.today().isoformat(), type="date",
+            hint="Defaults to today."),
+      field("from", "From", query.get("from") or "18:00", placeholder="18:00"),
+      field("to", "To", query.get("to") or "21:00", placeholder="21:00"),
+  )}
+  {group(
+      "What", "what",
+      select_field("sport", "Sport", sports, query.get("sport") or "pickleball",
+                   hint=SPORT_OPTIONS_HINT),
+      select_field("category", "Category", CATEGORY_OPTIONS, query.get("category") or "all",
+                   hint="Tickets are paid per person (xé vé); courts are rented whole."),
+      select_field("availability", "Availability", AVAILABILITY_OPTIONS,
+                   query.get("availability") or "any",
+                   hint="Read from the branch's booking list. A partly-free court is priced "
+                        "for the part that is still open; a taken court is left out."),
+  )}
   <div class="actions">
-    <button type="submit">Tìm sân rẻ nhất</button>
-    <span class="hint">Chỉ đọc — không đặt sân, không thanh toán.</span>
+    <button type="submit" class="btn-primary">Find</button>
+    <button type="button" class="btn-secondary" id="geo" hidden>Use current location</button>
+    <span class="hint note">Read-only — no booking, no payment.</span>
   </div>
+  <p class="hint geo-status" id="geo-status" aria-live="polite"></p>
 </form>"""
 
 
-def render_options(result: FindResult) -> str:
+def category_heading(title: str, unit: str, count: str, key: str) -> str:
+    """The heading of one result category: what it is, its unit, and how many."""
+    return (
+        f'<h3 class="category" id="{key}-heading">{esc(title)}'
+        f'<span class="unit">{esc(unit)}</span>'
+        f'<span class="count">{esc(count)}</span></h3>'
+    )
+
+
+def render_courts(result: FindResult) -> str:
+    """The court-rental category: most hours available first, then cheapest rate.
+
+    One row per court rather than per venue: courts in one branch differ in
+    availability and hours, so each is its own row. The total is not the ranking
+    key — a partly-free court sells fewer hours, so its total is smaller for that
+    reason alone — hence the Hours column, which is the primary sort key.
+    """
     ranked = result.ranked
+    heading = category_heading("Courts", "per court, most hours then cheapest rate",
+                               f"{len(ranked)} court(s)", "courts")
     if not ranked:
-        return ('<p class="empty">Không tìm thấy sân nào có giá trong khung giờ này. '
-                'Hãy thử mở rộng bán kính, đổi khu vực hoặc ngày khác.</p>')
+        return heading + (
+            '<p class="empty">No priced courts in this window. '
+            'Try a wider radius, another area, or another date.</p>'
+        )
     rows = []
     for index, opt in enumerate(ranked[:50], start=1):
         distance = f"{opt.distance_km:.1f} km" if opt.distance_km is not None else "—"
+        status = availability_label(opt.available, opt.free_spans)
+        tariff = opt.target_name or "—"
         rows.append(
             f'<tr class="{"top" if index == 1 else ""}">'
             f'<td class="rank">{index}</td>'
+            f'<td class="num">{hours_label(opt.hours)}</td>'
             f'<td class="num">{money(opt.total_price)}</td>'
             f'<td class="num">{money(opt.hourly_price)}</td>'
-            f'<td>{esc(opt.core.name)}<div class="venue-sub">{esc(opt.core_type.name)}</div></td>'
+            f'<td>{esc(opt.core.name)}</td>'
+            f'<td class="status status-{esc(opt.available or "unknown")}">{esc(status)}</td>'
+            f'<td class="tariff">{esc(tariff)}</td>'
             f'<td><a href="{esc(opt.booking_url)}" rel="noopener">{esc(opt.branch.name)}</a>'
             f'<div class="venue-sub">{esc(opt.branch.address)}</div></td>'
             f'<td class="num">{distance}</td></tr>'
         )
-    return f"""<div class="table-wrap">
+    return heading + f"""<div class="table-wrap">
 <table>
-  <caption>Giá thuê sân cho khung giờ đã chọn, rẻ nhất trước — {len(ranked)} sân</caption>
+  <caption>Most hours available first, then cheapest per hour — one row per court</caption>
   <thead><tr>
     <th scope="col">#</th>
-    <th scope="col" class="num">Tổng</th>
-    <th scope="col" class="num">Mỗi giờ</th>
-    <th scope="col">Sân</th>
-    <th scope="col">Chi nhánh</th>
-    <th scope="col" class="num">Khoảng cách</th>
+    <th scope="col" class="num">Hours</th>
+    <th scope="col" class="num">Total</th>
+    <th scope="col" class="num">Per hour</th>
+    <th scope="col">Court</th>
+    <th scope="col">Status</th>
+    <th scope="col">Tariff</th>
+    <th scope="col">Venue</th>
+    <th scope="col" class="num">Distance</th>
   </tr></thead>
   <tbody>{''.join(rows)}</tbody>
 </table>
 </div>"""
 
 
-def render_sessions(result: FindResult) -> str:
+def render_social(result: FindResult) -> str:
+    """The ticket category ("xé vé"): one ticket puts one person on a court.
+
+    Ranked like the courts table — one row per ticket, cheapest first.
+    """
+    tickets = result.ranked_social
+    heading = category_heading("Tickets (xé vé)", "per person, cheapest first",
+                               f"{len(tickets)} ticket(s)", "tickets")
+    if not tickets:
+        return heading + (
+            '<p class="empty">No tickets on sale in this window. '
+            'Try a wider radius, another area, or another date.</p>'
+        )
     rows = []
-    for branch_result in result.results:
-        for session in sorted(branch_result.sessions, key=lambda s: s.ticket_price):
-            when = f"{session.start:%H:%M}" if session.start else "—"
-            rows.append(
-                f"<tr><td class='num'>{money(session.ticket_price)}</td>"
-                f"<td>{esc(session.name)}<div class='venue-sub'>"
-                f"{esc(', '.join(session.court_names))}</div></td>"
-                f"<td>{when}</td><td class='num'>{session.spots_left}</td>"
-                f"<td>{esc(branch_result.branch.name)}</td></tr>"
-            )
-    if not rows:
-        return ""
-    return f"""<h2>Suất chơi chung (giá mỗi người)</h2>
-<div class="table-wrap">
+    for index, session in enumerate(tickets[:50], start=1):
+        starts = f"{session.start:%H:%M}" if session.start else "—"
+        ends = f"{session.end:%H:%M}" if session.end else "—"
+        venue = session.branch.name if session.branch else "—"
+        address = session.branch.address if session.branch else ""
+        distance = f"{session.distance_km:.1f} km" if session.distance_km is not None else "—"
+        rows.append(
+            f'<tr class="{"top" if index == 1 else ""}">'
+            f'<td class="num">{money(session.ticket_price)}</td>'
+            f'<td>{esc(session.name)}<div class="venue-sub">'
+            f"{esc(', '.join(session.court_names))}</div></td>"
+            f'<td>{starts}</td><td>{ends}</td><td class="num">{session.spots_left}</td>'
+            f'<td>{esc(venue)}<div class="venue-sub">{esc(address)}</div></td>'
+            f'<td class="num">{distance}</td></tr>'
+        )
+    return heading + f"""<div class="table-wrap">
 <table>
-  <caption>Social / open-play trong khung giờ — trả theo vé, không phải theo sân</caption>
+  <caption>Cheapest first — every ticket on sale in this window, one row per ticket</caption>
   <thead><tr>
-    <th scope="col" class="num">Vé</th><th scope="col">Suất</th><th scope="col">Bắt đầu</th>
-    <th scope="col" class="num">Chỗ còn</th><th scope="col">Chi nhánh</th>
+    <th scope="col" class="num">Ticket</th><th scope="col">Session</th><th scope="col">Starts</th>
+    <th scope="col">Ends</th><th scope="col" class="num">Spots left</th><th scope="col">Venue</th>
+    <th scope="col" class="num">Distance</th>
   </tr></thead>
   <tbody>{''.join(rows)}</tbody>
 </table>
@@ -218,18 +458,25 @@ def render_results(result: FindResult) -> str:
 
     start_dt, end_dt = window_bounds(query.day, query.start_minute, query.end_minute)
     end_label = f"{end_dt:%H:%M}" if start_dt.date() == end_dt.date() else f"{end_dt:%d/%m %H:%M}"
+    # Tickets lead: they are the cheapest way onto a court, and the category the
+    # operator wants seen first.
+    categories = []
+    if query.wants_social:
+        categories.append(render_social(result))
+    if query.wants_courts:
+        categories.append(render_courts(result))
     return f"""<section aria-labelledby="results-heading">
-  <h2 id="results-heading">Kết quả — {esc(result.sport_name)}</h2>
+  <h2 id="results-heading">Results — {esc(result.sport_name)}</h2>
   <p class="sub">{esc(area)} · {query.day:%d/%m/%Y} {start}–{end_label} ·
-     đã quét {result.branches_scanned} chi nhánh · cập nhật {result.generated_at:%H:%M}</p>
-  {render_options(result)}
-  {render_sessions(result)}
+     {result.branches_scanned} branches scanned · updated {result.generated_at:%H:%M}</p>
+  {''.join(categories)}
 </section>"""
 
 
 def render_page(
     *,
     sports: list[tuple[str, str]],
+    areas: list[str],
     query: dict | None = None,
     result: FindResult | None = None,
     error: str | None = None,
@@ -237,36 +484,39 @@ def render_page(
     """The whole page: header, search form, then results (or an error)."""
     body = []
     if error:
-        body.append(f'<p class="error" role="alert">Lỗi: {esc(error)}</p>')
+        body.append(f'<p class="error" role="alert">Error: {esc(error)}</p>')
     if result is not None:
         body.append(render_results(result))
     elif not error:
-        body.append('<p class="empty">Nhập khu vực và khung giờ để so sánh giá sân.</p>')
+        body.append('<p class="empty">Enter an area and a time window to compare court and ticket prices.</p>')
     return f"""<!DOCTYPE html>
-<html lang="vi">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>alobo-bot — sân pickleball rẻ nhất</title>
+<title>{BRAND} | {BRAND_TAGLINE}</title>
+<link rel="icon" href="{FAVICON}" type="image/svg+xml">
 <style>{STYLE}</style>
 </head>
 <body>
 <header>
-  <a class="skip-link" href="#content">Bỏ qua tới nội dung</a>
-  <h1>alobo-bot</h1>
-  <p class="sub">Tìm sân Pickleball rẻ nhất trên AloBooking theo khu vực và khung giờ.
-     Dữ liệu công khai · chỉ đọc.</p>
+  <a class="skip-link" href="#content">Skip to content</a>
+  <h1><a href="/">{LOGO}<span>{BRAND}</span></a></h1>
+  <p class="sub">Find the cheapest pickleball courts and tickets (xé vé) on AloBooking
+     by area and time window. Public data · read-only.</p>
 </header>
 <main id="content" tabindex="-1">
-  <h2>Tiêu chí tìm</h2>
-  {render_form(query or {}, sports)}
+  <h2>Search criteria</h2>
+  {render_form(query or {}, sports, areas)}
   {''.join(body)}
 </main>
 <footer>
-  <p>Nguồn: API công khai của datlich.alobo.vn. Giá là giá niêm yết cho thuê lẻ theo giờ.
-     <a href="/report.json">JSON</a> · <a href="/health">trạng thái</a> ·
-     <a href="?place=H%C3%A0%20N%E1%BB%99i&amp;from=18:00&amp;to=21:00">ví dụ: Hà Nội 18:00–21:00</a></p>
-  <p>Bot không kiểm tra tình trạng còn trống và không đặt sân — vui lòng xác nhận trong ứng dụng AloBooking.</p>
+  <p>Source: AloBooking's public API (datlich.alobo.vn). Courts are listed at the tariff
+     each branch publishes for a one-time rental; tickets are the listed price per person.
+     <a href="/report.json">JSON</a> · <a href="/health">status</a> ·
+     <a href="?place=H%C3%A0%20N%E1%BB%99i&amp;from=18:00&amp;to=21:00">example: Hà Nội 18:00–21:00</a></p>
+  <p>The bot never books and never pays — it reads AloBooking's published prices and
+     its booking list to say whether a court is free, then leaves the booking to you.</p>
 </footer>
 <script>{SCRIPT}</script>
 </body>

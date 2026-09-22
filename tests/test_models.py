@@ -1,4 +1,7 @@
-from alobo_bot.models import Branch, Core, CoreType, SocialSession, SpecialPrice
+import datetime as dt
+
+from alobo_bot.models import Booking, Branch, Core, CoreType, PriceTarget, SocialSession, SpecialPrice
+from alobo_bot.pricing import clip_to_hours, window_cost
 
 
 def test_branch_from_search_payload():
@@ -20,6 +23,28 @@ def test_branch_tolerates_missing_location():
     branch = Branch.from_api({"id": "x", "name": "X", "address": "", "type": None})
     assert branch.latitude is None and branch.longitude is None
     assert branch.sport_type is None
+
+
+def test_branch_reads_its_working_hours():
+    branch = Branch.from_api({"id": "x", "name": "X", "morningStartWorkingTime": 5,
+                              "afternoonEndWorkingTime": 22})
+    # 05:00-22:00 hours, and the grid's last column starts at closing: sold to 23:00.
+    assert branch.bookable == (5 * 60, 23 * 60)
+
+
+def test_bookable_is_none_without_both_ends_and_clamps_to_the_day():
+    assert Branch.from_api({"id": "x"}).bookable is None
+    assert Branch.from_api({"id": "x", "morningStartWorkingTime": 6}).bookable is None
+    at_midnight = Branch.from_api({"id": "x", "morningStartWorkingTime": 6,
+                                   "afternoonEndWorkingTime": 24})
+    assert at_midnight.bookable == (6 * 60, 24 * 60)  # 24:00 is the end of the day, not 25:00
+
+
+def test_clip_to_hours_intersects_the_window_with_the_opening_hours():
+    assert clip_to_hours(18 * 60, 24 * 60, (5 * 60, 23 * 60)) == (18 * 60, 23 * 60)
+    assert clip_to_hours(6 * 60, 8 * 60, (5 * 60, 23 * 60)) == (6 * 60, 8 * 60)
+    assert clip_to_hours(20 * 60, 22 * 60, (5 * 60, 10 * 60)) is None  # shut all window
+    assert clip_to_hours(22 * 60, 1 * 60, (5 * 60, 23 * 60)) == (22 * 60, 23 * 60)  # wraps
 
 
 def test_core_carries_pricing_key():
@@ -68,6 +93,100 @@ def test_overlapping_special_windows_first_wins():
     assert core.price_per_unit(12 * 60, weekday=1) == 82000
 
 
+LA_KHE_TYPE = {
+    "id": "san", "name": "Sân",
+    "normalPrice": 100000, "normalPriceOneTime": 110000,
+    "specialPrice": [],
+    "targets": {
+        "khach_hang_dong_quy_uu_dai_giam_gia": {
+            "name": "Ưu đãi giảm giá (Khách hàng đóng Quý - 3 tháng)",
+            "price": 0, "priceOneTime": 0, "minDuration": 60, "priority": 0,
+            "specialPrice": [
+                {"time": "5:00-17:00", "dateRangeWeek": "1-5", "price": 120000},
+                {"time": "17:00-23:00", "dateRangeWeek": "1-5", "price": 180000},
+            ],
+        },
+        "kh": {
+            "name": "Pickleball",
+            "price": 100000, "priceOneTime": 110000, "minDuration": 30, "priority": 0,
+            "specialPrice": [
+                {"time": "5:00-17:00", "dateRangeWeek": "1-5", "price": 140000},
+                {"time": "17:00-23:00", "dateRangeWeek": "1-5", "price": 200000},
+            ],
+        },
+    },
+}
+
+
+def test_target_carries_its_own_price_table():
+    # A target's special windows often carry only `price`, never `priceOneTime`.
+    target = PriceTarget.from_api("kh", {
+        "name": "Pickleball", "price": 100000, "priceOneTime": 110000,
+        "specialPrice": [{"time": "17:00-23:00", "dateRangeWeek": "1-5", "price": 200000}],
+    })
+    assert target.id == "kh" and target.name == "Pickleball"
+    assert target.price_per_unit(18 * 60, weekday=3) == 200000  # inside the block
+    assert target.price_per_unit(23 * 60, weekday=3) == 110000  # base rate outside it
+    assert target.price_per_unit(18 * 60, weekday=6) == 110000  # block is T2-T6 only
+
+
+def test_core_type_parses_targets_in_api_order():
+    core = CoreType.from_api(LA_KHE_TYPE)
+    # the type-level table is a placeholder; the real rates live on the targets
+    assert core.normal_price_one_time == 110000 and core.special_prices == []
+    assert list(core.targets) == ["khach_hang_dong_quy_uu_dai_giam_gia", "kh"]
+    assert core.targets["kh"].name == "Pickleball"
+
+
+def test_a_zero_one_time_rate_falls_back_to_the_base_rate():
+    # the app does this, and the API leans on it for branches with one flat rate
+    core = CoreType.from_api({"id": "x", "normalPrice": 60000, "normalPriceOneTime": 0})
+    assert core.normal_price_one_time == 60000
+
+
+def test_default_target_prefers_the_generic_customer_tariff():
+    # The API lists the quarterly-payer discount first; it is not the walk-up rate.
+    core = CoreType.from_api(LA_KHE_TYPE)
+    assert core.default_target().id == "kh"
+
+
+def test_default_target_falls_back_to_the_only_or_first_visible_one():
+    only = CoreType.from_api({"id": "t", "targets": {"san_mai_che": {"name": "Mái che"}}})
+    assert only.default_target().id == "san_mai_che"
+
+    picky = CoreType.from_api({"id": "t", "targets": {
+        "ve_thang": {"name": "Vé tháng", "hide": True},
+        "kh": {"name": "Khách hàng"},
+    }})
+    assert [t.id for t in picky.visible_targets()] == ["kh"]
+
+
+def test_targets_order_by_priority_then_api_order():
+    core = CoreType.from_api({"id": "t", "targets": {
+        "b": {"name": "B", "priority": 1},
+        "a": {"name": "A", "priority": 0},
+        "c": {"name": "C", "priority": 0},
+    }})
+    assert [t.id for t in core.ordered_targets()] == ["a", "c", "b"]
+
+
+def test_a_court_type_without_targets_prices_from_its_own_table():
+    core = CoreType.from_api({"id": "pickleball", "normalPrice": 60000,
+                              "normalPriceOneTime": 60000, "targets": {}})
+    assert core.default_target() is None
+    assert window_cost(core, 18 * 60, 21 * 60, weekday=3) == 180000
+
+
+def test_window_cost_uses_the_targets_rates_per_hour():
+    core = CoreType.from_api(LA_KHE_TYPE)
+    # La Khê "Pickleball", Wednesday: 17:00-23:00 is 200k/h, the rest is the 110k base.
+    assert window_cost(core, 18 * 60, 21 * 60, weekday=3, target=core.targets["kh"]) == 600000
+    assert window_cost(core, 18 * 60, 24 * 60, weekday=3, target=core.targets["kh"]) == 1110000
+    # the quarterly-payer tariff is a different table for the same window
+    discount = core.targets["khach_hang_dong_quy_uu_dai_giam_gia"]
+    assert window_cost(core, 18 * 60, 21 * 60, weekday=3, target=discount) == 540000
+
+
 def test_social_session_spots_left_and_start():
     session = SocialSession.from_api({
         "id": "s1", "name": "Social không giới hạn", "duration": 120,
@@ -78,3 +197,17 @@ def test_social_session_spots_left_and_start():
     assert session.spots_left == 6
     assert session.start is not None and session.start.hour == 8
     assert session.court_names == ["Pickleball 2"]
+
+
+def test_booking_reads_a_legs_court_time_and_duration():
+    legs = Booking.from_api({
+        "id": "1EdtLXv2pxzZad5Omuks", "time": "2026-09-23T18:00:00.000", "duration": 120,
+        "type": "groupOneTime", "status": 1,
+        "services": [{"serviceId": "pickleball_1", "startTime": "2026-09-23T18:00:00.000",
+                      "duration": 120, "price": 0, "amount": 2, "branchServiceType": "core"}],
+    })
+    assert len(legs) == 1
+    leg = legs[0]
+    assert leg.core_id == "pickleball_1"
+    assert leg.start == dt.datetime(2026, 9, 23, 18, 0)
+    assert leg.end == dt.datetime(2026, 9, 23, 20, 0)  # start + 120 min

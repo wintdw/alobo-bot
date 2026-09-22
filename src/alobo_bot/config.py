@@ -18,13 +18,13 @@ CONFIG_PATH = ROOT / "config.yaml"
 
 DEFAULTS: dict[str, Any] = {
     "api": {
-        "base_url": "https://user-app-new-vk7r7j5t3q-uc.a.run.app",
-        "global_url": "https://user-app-vk7r7j5t3q-uc.a.run.app",
+        "base_url": "https://user-app-new-ootprnz4oa-uc.a.run.app",
+        "global_url": "https://user-global-ootprnz4oa-uc.a.run.app",
         "app_name": "alobo-user",
         "platform": "web",
         "version": "2.10.3",
         "lang": "vi",
-        "app_key": "Alobo-User-Key-2026",
+        "app_key": "935b1fccd4bc45a12af095bf0bafa723",
         "timeout_seconds": 30,
         "delay_min_seconds": 0.3,
         "delay_max_seconds": 0.8,
@@ -33,10 +33,37 @@ DEFAULTS: dict[str, Any] = {
     "search": {
         "sport": "pickleball",
         "default_place": "Hà Nội",
-        "radius_km": 10.0,
+        "radius_km": 3.0,
         "max_branches": 25,
         "workers": 6,
         "page_size": 100,
+        # Which categories a run reports: all | court (per court) | social ("xé vé", per person).
+        "category": "all",
+        # Court availability: any (keep partly-free courts, quoted for the open
+        # part) | free (only courts free for the whole window).
+        "availability": "any",
+        # Tariff ("đối tượng áp dụng") to price courts under: a target id or name
+        # from get_core_types. Blank = each type's generic customer tariff.
+        "target": None,
+        "areas": [
+            "Hà Nội",
+            "Ba Đình, Hà Nội",
+            "Hoàn Kiếm, Hà Nội",
+            "Tây Hồ, Hà Nội",
+            "Long Biên, Hà Nội",
+            "Cầu Giấy, Hà Nội",
+            "Đống Đa, Hà Nội",
+            "Hai Bà Trưng, Hà Nội",
+            "Hoàng Mai, Hà Nội",
+            "Thanh Xuân, Hà Nội",
+            "Nam Từ Liêm, Hà Nội",
+            "Bắc Từ Liêm, Hà Nội",
+            "Hà Đông, Hà Nội",
+            "Hoài Đức, Hà Nội",
+            "Gia Lâm, Hà Nội",
+            "Thanh Trì, Hà Nội",
+            "Đông Anh, Hà Nội",
+        ],
     },
     "report": {"dir": "data/reports"},
     "raw": {"dir": "data/raw"},

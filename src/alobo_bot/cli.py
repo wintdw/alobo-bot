@@ -1,4 +1,4 @@
-"""alobo-bot command line: `find` (cheapest court) and `serve` (HTTP viewer)."""
+"""alobo-bot command line: `find` (cheapest courts and tickets) and `serve` (HTTP viewer)."""
 
 from __future__ import annotations
 
@@ -35,6 +35,16 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     p_find.add_argument("--to", dest="time_to", default="21:00", metavar="HH:MM",
                         help="window end (default: 21:00)")
     p_find.add_argument("--sport", default=None, help="sport key (default from config: pickleball)")
+    p_find.add_argument("--category", choices=("all", "court", "social"), default=None,
+                        help="which categories to report: all (default), court (per court), "
+                             "or social (\"xé vé\": tickets, per person)")
+    p_find.add_argument("--availability", choices=("any", "free"), default=None,
+                        help="court availability: any (default) keeps courts that are only "
+                             "partly free and quotes them for the open part; free keeps only "
+                             "courts free for the whole window")
+    p_find.add_argument("--target", default=None, metavar="ID|NAME",
+                        help="tariff (\"đối tượng áp dụng\") to price courts under, e.g. kh; "
+                             "default: each court type's generic customer tariff")
     p_find.add_argument("--limit", type=int, default=None,
                         help="max branches to price (default from config)")
     p_find.add_argument("--json", action="store_true", help="print machine-readable JSON")
@@ -48,7 +58,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
 
     p_serve = sub.add_parser("serve", help="run the FastAPI report viewer")
     p_serve.add_argument("--host", default="0.0.0.0")
-    p_serve.add_argument("--port", type=int, default=8084)
+    p_serve.add_argument("--port", type=int, default=8085)
     p_serve.set_defaults(func=_cmd_serve)
     return parser.parse_args(argv)
 
@@ -77,6 +87,9 @@ def _cmd_find(args: argparse.Namespace) -> int:
             end_minute=parse_clock(args.time_to),
             sport=args.sport,
             max_branches=args.limit,
+            category=args.category,
+            availability=args.availability,
+            target=args.target,
         )
     except (ClockError, ValueError) as exc:
         print(f"invalid argument: {exc}", file=sys.stderr)

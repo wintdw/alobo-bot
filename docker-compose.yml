@@ -2,13 +2,13 @@
 # report and can run a fresh search on demand. No host cron needed.
 #
 # DATA LIVES ON THE HOST. ./data is bind-mounted so reports and raw snapshots
-# survive container rebuilds. Make it writable by the container's uid 10002:
-#   sudo chown -R 10002:10002 data
+# survive container rebuilds. Make it writable by the container's uid 1000:
+#   sudo chown -R 1000:1000 data
 #
 # Examples:
 #   docker compose up -d --build
-#   curl localhost:8084/                                   # latest report
-#   curl -X POST 'localhost:8084/find?place=H%C3%A0%20N%E1%BB%99i&from=18:00&to=21:00'
+#   curl localhost:8085/                                   # latest report
+#   curl -X POST 'localhost:8085/find?place=H%C3%A0%20N%E1%BB%99i&from=18:00&to=21:00'
 #   docker compose run --rm alobo-bot find --place "Cầu Giấy, Hà Nội" --from 18:00 --to 21:00 --out
 services:
   alobo-bot:
@@ -19,7 +19,7 @@ services:
     environment:
       - TZ=Asia/Ho_Chi_Minh     # prices are evaluated in the venue's local time
     ports:
-      - "8084:8084"
+      - "8085:8085"
     volumes:
       - ./data:/app/data
     # Uncomment to override config.yaml without rebuilding the image:
