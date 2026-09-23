@@ -39,15 +39,23 @@ class Branch:
     status: int | None = None
 
     @property
-    def is_locked(self) -> bool:
-        """Whether the venue is withdrawn and so cannot be booked.
+    def is_bookable(self) -> bool:
+        """Whether the venue is actually on sale in the booking app.
 
-        The branch list marks a locked branch ``status == -1`` (its name often
-        carries "(khóa)" / "(đã khóa tạo cn mới)") and a removed one ``-2``; the
-        app drops exactly those before it lists anything, and their courts are no
-        longer for sale. A payload that omits the field is taken as active.
+        The branch list carries every venue, including ones the booking app will
+        not sell, so ``status`` is the only public field that says which are
+        live: the customer booking search (``get_filtered_branch_booking``)
+        answers with exactly the ``status == 1`` branches and never a ``0``,
+        ``-1`` or ``-2`` one, and a venue's deep-link page refuses to book
+        anything else. ``-1``/``-2`` are locked/removed (their names often say
+        so: "(khóa)", "(đã khóa tạo cn mới)"), while ``0`` is a draft or paused
+        listing — it can still hold bookings the venue took itself, but a
+        customer cannot book it, so its courts price up and look free while
+        being unsellable. A payload that omits the field is taken as bookable,
+        since the list always sends it and dropping a venue over a missing field
+        would silently empty a search.
         """
-        return self.status is not None and self.status < 0
+        return self.status is None or self.status == 1
 
     @property
     def bookable(self) -> tuple[int, int] | None:
@@ -414,6 +422,75 @@ class Booking:
 
 
 @dataclass(slots=True)
+class LockYard:
+    """A stretch the venue keeps one of its own courts off sale for — the app's "Khóa".
+
+    ``get_lock_yards`` lists the slots a branch has locked. They are not bookings:
+    nobody holds them, yet the app paints them grey in its booking grid and refuses
+    to sell them, so a court with no booking can still be unbookable there. It is
+    how a branch says "we stop selling at 22:00" (125 Hoàng Ngân locks 22:00-24:00
+    daily) or "closed for a tournament" (a one-off on a single date).
+
+    ``frequency`` decides which of the two a lock is; the dates carried on
+    ``startTime``/``endTime`` are *not* a range:
+
+    * ``frequency`` non-empty — a **recurring** window: ``startTime``..``endTime``
+      read as a time of day, blocked on every day whose weekday is in ``frequency``
+      (1=Mon..7=Sun, the numbering the API's price tables use too) other than
+      ``skipDates``. The dates are just the day the lock was filed, so one filed in
+      2025 still blocks its window today.
+    * ``frequency`` empty — a **one-off**: the exact ``startTime``..``endTime``
+      stretch, on the date it names and no other.
+
+    ``servicesId`` names the courts it takes off, and ``blocks`` gives the stretch
+    it takes off them on a given day.
+    """
+
+    id: str
+    core_ids: tuple[str, ...]
+    start: dt.datetime | None
+    end: dt.datetime | None
+    weekdays: tuple[int, ...] = ()
+    skip_dates: tuple[dt.date, ...] = ()
+
+    def blocks(self, day: dt.date) -> tuple[dt.datetime, dt.datetime] | None:
+        """The stretch this lock takes off every court it names on *day*, or None.
+
+        A recurring lock answers on each day its weekdays name; a one-off answers
+        only on its own date. A window whose end is at or before its start wraps
+        past midnight, keeping the same shape a court booking has.
+        """
+        if self.start is None or self.end is None or day in self.skip_dates:
+            return None
+        if not self.weekdays:  # a one-off: only the date it was filed for
+            return (self.start, self.end) if self.start.date() == day else None
+        if day.isoweekday() not in self.weekdays:
+            return None
+        begin = dt.datetime.combine(day, self.start.time())
+        finish = dt.datetime.combine(day, self.end.time())
+        if finish <= begin:  # a window that runs past midnight, e.g. 23:00-01:00
+            finish += dt.timedelta(days=1)
+        return begin, finish
+
+    @classmethod
+    def from_api(cls, data: dict) -> "LockYard":
+        return cls(
+            id=str(data.get("id") or ""),
+            core_ids=tuple(str(core) for core in (data.get("servicesId") or []) if core),
+            start=_naive(parse_dt(data.get("startTime"))),
+            end=_round_up_to_minute(_naive(parse_dt(data.get("endTime")))),
+            weekdays=tuple(
+                int(day) for day in (data.get("frequency") or []) if str(day).isdigit()
+            ),
+            skip_dates=tuple(
+                moment.date()
+                for moment in (parse_dt(day) for day in (data.get("skipDates") or []))
+                if moment is not None
+            ),
+        )
+
+
+@dataclass(slots=True)
 class CourtOption:
     """One court in one branch, priced for the requested window.
 
@@ -447,6 +524,23 @@ class CourtOption:
     @property
     def booking_url(self) -> str:
         return self.branch.booking_url
+
+
+def _naive(moment: dt.datetime | None) -> dt.datetime | None:
+    """*moment* without a timezone: a payload stamp is the venue's own local time."""
+    return moment.replace(tzinfo=None) if moment is not None else None
+
+
+def _round_up_to_minute(moment: dt.datetime | None) -> dt.datetime | None:
+    """*moment* rounded up to the next whole minute (``23:59:59`` -> ``24:00``).
+
+    A lock's end often carries seconds — the whole-day form is ``23:59:59`` — and
+    means "through the end of the day". Keeping the leftover seconds would leave a
+    sellable minute in a window the app refuses to book.
+    """
+    if moment is None or not (moment.second or moment.microsecond):
+        return moment
+    return moment.replace(second=0, microsecond=0) + dt.timedelta(minutes=1)
 
 
 def _parse_window(text: str) -> tuple[int, int] | None:

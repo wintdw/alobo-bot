@@ -48,6 +48,15 @@ docs/          reverse-engineering notes: updating-api-keys.md,
   as secrets.
 - **Tests must not touch the network.** Use the `FakeClient` pattern in
   `tests/test_search.py`.
+- **Only `status == 1` venues are bookable.** The branch list returns every
+  venue, including ones the booking app will not sell, and their
+  `get_cores`/`get_core_types` calls answer normally — so an unbookable venue
+  prices up and looks free. The app's own search settles the rule: its
+  `get_filtered_branch_booking` answers with only `status` `1` branches, never a
+  `0`/`-1`/`-2`. `-1`/`-2` are locked/removed and `0` is a draft or paused
+  listing (a placeholder address is a giveaway) that can still hold bookings the
+  venue made itself. Gate the shortlist and the tickets on
+  `models.Branch.is_bookable`; a missing `status` counts as bookable.
 - **Price from a tariff, never from the bare type.** `get_core_types` gives each
   court type a generic `normalPrice` *and* one table per tariff under `targets`
   (the app's "đối tượng áp dụng"). The generic one is a placeholder in most
@@ -68,6 +77,17 @@ docs/          reverse-engineering notes: updating-api-keys.md,
 - **Quote what is actually bookable.** A partly-free court is priced for its
   open spans, and a fully booked one is dropped: it has nothing left to sell, so
   quoting the full window would invent a price for hours somebody else holds.
+- **A slot the venue locked is not for sale either.** `get_lock_yards` lists the
+  stretches a branch keeps its own courts off sale for — "Khóa" in the app's
+  grid. Nobody holds them, yet the app paints them grey and refuses to book them,
+  so a court with no booking can still be unsellable at 22:00; many branches end
+  their evening that way (125 Hoàng Ngân locks 22:00-24:00 daily) and ignoring it
+  quotes hours that are not on sale. A lock's `frequency` says which kind it is:
+  a weekday list (1=Mon..7=Sun) makes it a *daily* window whose `startTime`/
+  `endTime` dates are only the day it was filed, while an empty list makes it a
+  one-off on the date it names. Both come off the window like a booking
+  (`models.LockYard`, `availability.free_spans`); see
+  [docs/court-availability.md](docs/court-availability.md).
 - Keep `data/` git-ignored; it holds reports and raw snapshots.
 - **Durable state lives on the host.** The `/status` counters (`metrics.py`) and
   the result cache (`web.py`) are written under `state.dir` (`data/state/`) and

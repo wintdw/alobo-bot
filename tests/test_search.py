@@ -5,7 +5,16 @@ import pytest
 
 from alobo_bot.api import ApiError
 from alobo_bot.config import DEFAULTS
-from alobo_bot.models import Booking, Branch, Core, CoreType, PriceTarget, SocialSession, SportType
+from alobo_bot.models import (
+    Booking,
+    Branch,
+    Core,
+    CoreType,
+    LockYard,
+    PriceTarget,
+    SocialSession,
+    SportType,
+)
 from alobo_bot.search import (
     build_query,
     find_cheapest,
@@ -21,7 +30,7 @@ class FakeClient:
     """In-memory stand-in for AloboClient (no network)."""
 
     def __init__(self, branches, cores, core_types, sessions=None, areas=None,
-                 bookings=None, availability_fails=()):
+                 bookings=None, availability_fails=(), locks=None, lock_fails=()):
         self._branches = branches
         self._cores = cores
         self._core_types = core_types
@@ -29,7 +38,9 @@ class FakeClient:
         self._areas = areas or {}
         self._bookings = bookings or {}          # branch_id -> [Booking]
         self._availability_fails = set(availability_fails)
-        self.calls = {"cores": set(), "bookings": 0, "availability": []}
+        self._locks = locks or {}                # branch_id -> [LockYard]
+        self._lock_fails = set(lock_fails)
+        self.calls = {"cores": set(), "bookings": 0, "availability": [], "locks": []}
 
     def sport_types(self):
         return [
@@ -52,6 +63,12 @@ class FakeClient:
         if branch_id in self._availability_fails:
             raise ApiError(f"HTTP 400 for get_onetime_bookings on {branch_id}")
         return list(self._bookings.get(branch_id, []))
+
+    def get_lock_yards(self, branch_id):
+        self.calls["locks"].append(branch_id)
+        if branch_id in self._lock_fails:
+            raise ApiError(f"HTTP 500 for get_lock_yards on {branch_id}")
+        return list(self._locks.get(branch_id, []))
 
     def branch_booking_search(self, *args, **kwargs):
         self.calls["bookings"] += 1
@@ -218,30 +235,41 @@ def test_find_skips_court_without_price_table():
     assert result.ranked == []
 
 
-def test_locked_venues_are_not_priced_or_listed():
-    # The branch list keeps withdrawn venues — status -1, the name carrying
-    # "(đã khóa tạo cn mới)" / "(khóa)" — and the app drops them before listing
-    # anything. Their courts are no longer for sale, so a search must not quote them.
-    branches = [branch("open", "Pickleball Open Hà Nội", "Hà Nội"),
+def test_unbookable_venues_are_not_priced_or_listed():
+    # The branch list keeps venues the booking app will not sell: status -1 (a
+    # locked venue, name carrying "(đã khóa tạo cn mới)"), -2, or 0 — a draft or
+    # paused listing such as "CLB  PICKLEBALL" with a placeholder address, whose
+    # courts still price up and look free. A search must not quote any of them.
+    branches = [branch("open", "Pickleball Open Hà Nội", "Hà Nội", status=1),
                 branch("locked", "789 Pickleball Club (đã khóa tạo cn mới)", "Hà Nội",
-                       status=-1)]
-    cores = {"open": [pickle_court("o1")], "locked": [pickle_court("l1")]}
-    types = {"open": [price_type(100000)], "locked": [price_type(1000)]}
+                       status=-1),
+                branch("draft", "CLB  PICKLEBALL", "Hà Nội", status=0)]
+    cores = {"open": [pickle_court("o1")], "locked": [pickle_court("l1")],
+             "draft": [pickle_court("d1")]}
+    types = {"open": [price_type(100000)], "locked": [price_type(1000)],
+             "draft": [price_type(1000)]}
     client = FakeClient(branches, cores, types)
 
     result = find_cheapest(cfg(), build_query(cfg(), place="Hà Nội"), client=client)
 
     assert [o.branch.id for o in result.ranked] == ["open"]
-    assert "locked" not in client.calls["cores"]  # not even fetched, so not priced
+    assert client.calls["cores"] == {"open"}  # not even fetched, so not priced
 
 
-def test_locked_venue_tickets_are_not_shown():
-    locked = branch("locked", "Sân Pickleball Đã Khóa Hà Nội", "Hà Nội", status=-1)
-    tickets = {"locked": [SocialSession(id="s1", name="Xé vé tối",
-                                        start=dt.datetime(2026, 9, 22, 19, 0), duration_min=120,
-                                        ticket_price=50000, max_player=10, current_player=1,
-                                        sport_type=5)]}
-    client = FakeClient([locked], {}, {}, sessions=tickets)
+def test_tickets_of_unbookable_venues_are_not_shown():
+    # The ticket endpoint itself only answers for status-1 branches, but the guard
+    # is kept in the search too: a venue the booking app will not sell must not
+    # surface a ticket.
+    branches = [branch("locked", "Sân Pickleball Đã Khóa Hà Nội", "Hà Nội", status=-1),
+                branch("draft", "CLB  PICKLEBALL", "Hà Nội", status=0)]
+    session = SocialSession(id="s1", name="Xé vé tối", start=dt.datetime(2026, 9, 22, 19, 0),
+                            duration_min=120, ticket_price=50000, max_player=10,
+                            current_player=1, sport_type=5)
+    tickets = {"locked": [session],
+               "draft": [SocialSession(id="s2", name="Xé vé tối", start=session.start,
+                                       duration_min=120, ticket_price=50000, max_player=10,
+                                       current_player=1, sport_type=5)]}
+    client = FakeClient(branches, {}, {}, sessions=tickets)
 
     result = find_cheapest(
         cfg(),
@@ -942,6 +970,112 @@ def test_a_fully_booked_court_has_no_price_to_quote():
 
     assert result.ranked == []
     assert result.results[0].options == []
+
+
+# --- the slots the venue keeps locked ----------------------------------------
+# A locked slot (the app's "Khóa") blocks a court as firmly as a booking while
+# holding it for nobody, and the app refuses to book it. Many branches use one to
+# end their evening — 125 Hoàng Ngân locks 22:00-24:00 daily — so ignoring it
+# quotes hours that are not on sale, which is a court looking free after it closed.
+
+
+def test_a_slot_the_venue_locks_is_not_offered_as_free_time():
+    # Hours run to midnight, but the venue locks 22:00-24:00 every day: an
+    # 18:00-24:00 request is only open up to 22:00, not for two more hours.
+    lock = LockYard.from_api({
+        "id": "l1", "servicesId": ["a1"],
+        "startTime": "2025-12-04T22:00:00.000", "endTime": "2025-12-04T23:59:59.000",
+        "frequency": [1, 2, 3, 4, 5, 6, 7], "skipDates": [],
+    })
+    client = FakeClient([venue("a", 5, 24)], {"a": [pickle_court("a1")]},
+                        {"a": [price_type(100000)]}, locks={"a": [lock]})
+
+    option = find_cheapest(
+        cfg(), build_query(cfg(), place="Hà Nội", day=dt.date(2026, 9, 23), **EVENING),
+        client=client).ranked[0]
+
+    assert option.available == "partial"
+    assert option.free_spans == [(dt.datetime(2026, 9, 23, 18, 0),
+                                  dt.datetime(2026, 9, 23, 22, 0))]
+    assert option.hours == 4.0
+    assert option.total_price == 400000
+
+
+def test_a_court_the_venue_locks_for_the_whole_window_is_not_offered():
+    # A one-off closure on the searched day (a tournament, a holiday) leaves the
+    # court nothing to sell, exactly as a booking across the window would.
+    lock = LockYard.from_api({
+        "id": "l1", "servicesId": ["a1"],
+        "startTime": "2026-09-23T18:00:00.000", "endTime": "2026-09-23T23:59:59.000",
+        "frequency": [], "skipDates": [],
+    })
+    client = FakeClient([venue("a", 5, 24)], {"a": [pickle_court("a1")]},
+                        {"a": [price_type(100000)]}, locks={"a": [lock]})
+
+    result = find_cheapest(
+        cfg(), build_query(cfg(), place="Hà Nội", day=dt.date(2026, 9, 23), **EVENING),
+        client=client)
+
+    assert result.ranked == []
+
+
+def test_a_one_off_lock_does_not_reach_another_day():
+    # The same closure filed for the 23rd says nothing about the 24th.
+    lock = LockYard.from_api({
+        "id": "l1", "servicesId": ["a1"],
+        "startTime": "2026-09-23T18:00:00.000", "endTime": "2026-09-23T23:59:59.000",
+        "frequency": [], "skipDates": [],
+    })
+    client = FakeClient([venue("a", 5, 24)], {"a": [pickle_court("a1")]},
+                        {"a": [price_type(100000)]}, locks={"a": [lock]})
+
+    option = find_cheapest(
+        cfg(), build_query(cfg(), place="Hà Nội", day=dt.date(2026, 9, 24), **EVENING),
+        client=client).ranked[0]
+
+    assert option.available == "free"
+    assert option.hours == 6.0
+
+
+def test_a_lock_on_another_court_does_not_touch_this_one():
+    lock = LockYard.from_api({
+        "id": "l1", "servicesId": ["a2"],
+        "startTime": "2026-09-23T18:00:00.000", "endTime": "2026-09-23T23:59:59.000",
+        "frequency": [], "skipDates": [],
+    })
+    client = FakeClient([venue("a", 5, 24)],
+                        {"a": [pickle_court("a1"), pickle_court("a2")]},
+                        {"a": [price_type(100000)]}, locks={"a": [lock]})
+
+    result = find_cheapest(
+        cfg(), build_query(cfg(), place="Hà Nội", day=dt.date(2026, 9, 23), **EVENING),
+        client=client)
+
+    assert {o.core.id: o.available for o in result.ranked} == {"a1": "free"}
+
+
+def test_a_lock_is_read_for_every_branch_it_prices():
+    client = FakeClient([venue("a", 5, 24)], {"a": [pickle_court("a1")]},
+                        {"a": [price_type(100000)]})
+
+    find_cheapest(cfg(), build_query(cfg(), place="Hà Nội", day=dt.date(2026, 9, 23), **EVENING),
+                  client=client)
+
+    assert client.calls["locks"] == ["a"]
+
+
+def test_an_unreadable_lock_list_marks_courts_unknown_rather_than_free():
+    # Without the lock list a court cannot be called free — the venue may well keep
+    # the whole window off sale — so the verdict is the same "no answer" a failed
+    # booking lookup gives.
+    client = FakeClient([venue("a", 5, 24)], {"a": [pickle_court("a1")]},
+                        {"a": [price_type(100000)]}, lock_fails={"a"})
+
+    result = find_cheapest(
+        cfg(), build_query(cfg(), place="Hà Nội", day=dt.date(2026, 9, 23), **EVENING),
+        client=client)
+
+    assert result.ranked[0].available == "unknown"
 
 
 def test_parse_availability_defaults_and_rejects_unknown():

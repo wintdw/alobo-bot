@@ -6,6 +6,7 @@ from alobo_bot.models import (
     Core,
     CoreType,
     CourtOption,
+    LockYard,
     PriceTarget,
     SocialSession,
     SpecialPrice,
@@ -41,14 +42,16 @@ def test_branch_reads_its_working_hours():
     assert branch.bookable == (5 * 60, 23 * 60)
 
 
-def test_branch_status_marks_locked_and_removed_venues():
-    # The list marks a locked branch -1 (its name carries "(khóa)") and a removed
-    # one -2; the app drops exactly those. 0 and 1 are live.
-    assert Branch.from_api({"id": "x", "status": -1}).is_locked
-    assert Branch.from_api({"id": "x", "status": -2}).is_locked
-    assert not Branch.from_api({"id": "x", "status": 0}).is_locked
-    assert not Branch.from_api({"id": "x", "status": 1}).is_locked
-    assert not Branch.from_api({"id": "x"}).is_locked  # unstated -> treated as active
+def test_only_active_venues_count_as_bookable():
+    # The branch list keeps every venue, but the booking app sells only status 1 —
+    # its own search endpoint answers with exactly those and never a 0, -1 or -2.
+    # 0 is a draft/paused listing whose courts price up but cannot be booked.
+    assert not Branch.from_api({"id": "x", "status": -1}).is_bookable
+    assert not Branch.from_api({"id": "x", "status": -2}).is_bookable
+    assert not Branch.from_api({"id": "x", "status": 0}).is_bookable
+    assert not Branch.from_api({"id": "x", "status": 2}).is_bookable
+    assert Branch.from_api({"id": "x", "status": 1}).is_bookable
+    assert Branch.from_api({"id": "x"}).is_bookable  # unstated -> taken as bookable
 
 
 def test_bookable_is_none_without_both_ends_and_clamps_to_the_day():
@@ -252,3 +255,78 @@ def test_booking_reads_a_legs_court_time_and_duration():
     assert leg.core_id == "pickleball_1"
     assert leg.start == dt.datetime(2026, 9, 23, 18, 0)
     assert leg.end == dt.datetime(2026, 9, 23, 20, 0)  # start + 120 min
+
+
+# --- the slots a venue keeps locked ("Khóa") ---------------------------------
+# A lock's `frequency` decides which of two things it is: a weekday list makes it a
+# daily window, an empty list makes it a one-off on the date it names. The dates
+# riding on startTime/endTime are never a range — the app reads only the clock and
+# the repetition, which is why a lock filed in 2025 still answers today.
+
+
+def test_a_recurring_lock_blocks_its_window_on_every_day_it_names():
+    lock = LockYard.from_api({
+        "id": "l1", "servicesId": ["pickleball_1", "pickleball_2"],
+        "startTime": "2025-12-04T22:00:00.000", "endTime": "2025-12-04T23:59:59.000",
+        "frequency": [1, 2, 3, 4, 5, 6, 7], "skipDates": [],
+    })
+    assert lock.core_ids == ("pickleball_1", "pickleball_2")
+    # 23:59:59 is the whole-day form: the lock runs to midnight, not to 23:59.
+    assert lock.blocks(dt.date(2026, 9, 23)) == (dt.datetime(2026, 9, 23, 22, 0),
+                                                dt.datetime(2026, 9, 24, 0, 0))
+
+
+def test_a_recurring_lock_answers_only_on_its_weekdays():
+    # 2026-09-23 is a Wednesday, so a weekend-only lock leaves it alone.
+    lock = LockYard.from_api({
+        "id": "l1", "servicesId": ["pickleball_1"],
+        "startTime": "2026-03-29T05:00:00.000", "endTime": "2026-03-29T07:00:00.000",
+        "frequency": [6, 7], "skipDates": [],
+    })
+    assert lock.blocks(dt.date(2026, 9, 26)) == (dt.datetime(2026, 9, 26, 5, 0),
+                                                dt.datetime(2026, 9, 26, 7, 0))  # Saturday
+    assert lock.blocks(dt.date(2026, 9, 27)) is not None                        # Sunday
+    assert lock.blocks(dt.date(2026, 9, 23)) is None                            # Wednesday
+
+
+def test_a_skip_date_takes_a_day_out_of_a_recurring_lock():
+    lock = LockYard.from_api({
+        "id": "l1", "servicesId": ["pickleball_1"],
+        "startTime": "2026-03-29T05:00:00.000", "endTime": "2026-03-29T07:00:00.000",
+        "frequency": [1, 2, 3, 4, 5, 6, 7], "skipDates": ["2026-09-24"],
+    })
+    assert lock.skip_dates == (dt.date(2026, 9, 24),)
+    assert lock.blocks(dt.date(2026, 9, 24)) is None
+    assert lock.blocks(dt.date(2026, 9, 23)) is not None
+
+
+def test_a_one_off_lock_blocks_only_the_date_it_names():
+    # No weekday list: the venue blocked one exact stretch — a tournament, a
+    # holiday closure — so it says nothing about the days around it.
+    lock = LockYard.from_api({
+        "id": "l1", "servicesId": ["pickleball_1"],
+        "startTime": "2026-09-28T05:00:00.000", "endTime": "2026-09-28T23:59:59.000",
+        "frequency": [], "skipDates": [],
+    })
+    assert lock.blocks(dt.date(2026, 9, 28)) == (dt.datetime(2026, 9, 28, 5, 0),
+                                                dt.datetime(2026, 9, 29, 0, 0))
+    assert lock.blocks(dt.date(2026, 9, 29)) is None
+
+
+def test_a_lock_window_that_runs_past_midnight_wraps():
+    lock = LockYard.from_api({
+        "id": "l1", "servicesId": ["pickleball_1"],
+        "startTime": "2026-06-01T23:00:00.000", "endTime": "2026-06-01T01:00:00.000",
+        "frequency": [1, 2, 3, 4, 5, 6, 7], "skipDates": [],
+    })
+    assert lock.blocks(dt.date(2026, 9, 23)) == (dt.datetime(2026, 9, 23, 23, 0),
+                                                dt.datetime(2026, 9, 24, 1, 0))
+
+
+def test_a_lock_without_both_ends_blocks_nothing():
+    assert LockYard.from_api({"id": "l1", "servicesId": ["c1"],
+                              "frequency": [1]}).blocks(dt.date(2026, 9, 23)) is None
+    assert LockYard.from_api({"id": "l1", "servicesId": ["c1"],
+                              "startTime": "2026-09-23T22:00:00.000",
+                              "frequency": [1]}).blocks(dt.date(2026, 9, 23)) is None
+    assert LockYard.from_api({}).blocks(dt.date(2026, 9, 23)) is None

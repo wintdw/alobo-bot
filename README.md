@@ -112,16 +112,20 @@ comes last despite having the second-cheapest rate and the smallest total.
   tickets first, since they are the cheapest way onto a court. `--category`
   (or the page's **Category** control) narrows the run to one of them; `all`
   does both.
-- **Withdrawn venues are left out.** The branch list keeps locked and removed
-  venues (`status` `-1`/`-2` — names like "789 Pickleball Club (đã khóa tạo cn
-  mới)" or "(khóa)Stamina …") so the app can still show them a "closed" page, but
-  their courts and tickets are no longer on sale. The bot drops them before
-  pricing, so every listed result is a venue you can actually book.
+- **Only venues you can actually book are listed.** The branch list keeps every
+  venue, including ones the booking app will not sell. `status` `-1`/`-2` are
+  locked or removed (names like "789 Pickleball Club (đã khóa tạo cn mới)" or
+  "(khóa)Stamina …"), and `status` `0` is a draft or paused listing — e.g.
+  "CLB  PICKLEBALL", whose address is the placeholder "Ha Noi". Their courts
+  still price up and look free, but the app refuses to book them; its own search
+  offers `status` `1` venues only. The bot drops everything else before pricing,
+  so every listed result is a venue you can actually book.
 - **Availability checked.** Each court is tagged from the branch's own booking
-  list — `available`, `partial` with the still-open spans (a court taken 18:00–20:00 of
-  an 18:00–21:00 search shows `partial 20:00-21:00`), or `?` when the list could
-  not be read. A court taken for the *whole* window is left out entirely: it has
-  nothing left to sell, so there is no price to quote.
+  list *and* from the slots the venue keeps locked for its own courts — `available`,
+  `partial` with the still-open spans (a court taken 18:00–20:00 of an 18:00–21:00
+  search shows `partial 20:00-21:00`), or `?` when they could not be read. A court
+  taken for the *whole* window is left out entirely: it has nothing left to sell,
+  so there is no price to quote.
 - **You are quoted for what you can book.** A partly-free court is priced for its
   open time only, not the whole window: asked for 18:00–24:00 at a venue whose
   last hour is the only one free, you see that hour's price (e.g. `200.000đ`,
@@ -136,6 +140,13 @@ comes last despite having the second-cheapest rate and the smallest total.
   publishes no rate for is not on sale either, so it is trimmed off the window
   instead of being quoted at nothing. `hours` in the JSON says how long the
   priced window turned out to be.
+- **Locked slots are not for sale.** A branch can also keep its own courts off
+  sale for a stretch — the app's grey "Khóa" cells: cleaning, a tournament, or
+  simply the end of its evening (125 Hoàng Ngân locks 22:00–24:00 every day even
+  though its hours run to midnight). Nobody holds those slots, but the app will
+  not sell them, so they come off the window exactly as somebody else's booking
+  does: a court free only in them reads `partial` up to the lock rather than
+  `available` for hours that cannot be bought.
 - **One row per court, ranked by hours available then rate.** Every priced court
   is listed on its own. Courts in the same branch are separate bookings with
   their own hours and availability, so a venue that rents several courts
@@ -301,6 +312,7 @@ live values are XOR-obfuscated in the bundle, not the plain literals).
 | GET | `/v2/user/branch/get_cores/{id}` | courts, each with a `setting` |
 | GET | `/v2/user/branch/get_core_types/{id}` | price tables per tariff; id matches core `setting` |
 | GET | `/v2/user/branch/get_onetime_bookings?branchId=&startDate=&endDate=` | the branch's existing bookings, i.e. the courts that are *taken* |
+| GET | `/v2/user/branch/get_lock_yards/{id}` | the slots the branch keeps locked for its own courts, i.e. also not for sale |
 | POST | `/v2/user/branch/get_filtered_branch_booking` | tickets for a date range (`socialOneTime`) |
 
 A court's price comes from the `get_core_types` entry whose `id` equals the
@@ -319,16 +331,18 @@ back to the `yardType` of the *area* the court sits in (the only thing that
 separates pickleball from football in a mixed branch), and finally to the sport
 being searched for. Court availability comes from
 `get_onetime_bookings` — the branch's own booking list, public and login-free —
-and is what the `free`/`booked`/`partial` status is read from; see
-[docs/court-availability.md](docs/court-availability.md).
+plus `get_lock_yards`, the slots the branch keeps off sale for its own courts
+(the app's grey "Khóa" cells), and is what the `free`/`booked`/`partial` status
+is read from; see [docs/court-availability.md](docs/court-availability.md).
 
 ## Limitations
 
 - **Availability is best-effort, and per window.** The status describes the exact
   window you asked for: a court taken 18:00–20:00 is `booked` for 18:00–21:00 and
-  `partial 20:00-21:00` for it. A `?` means the booking list could not be read —
-  the API rejects a date outside the branch's booking window, and its clock is the
-  venue's (UTC+7), so a date that is already past in Vietnam comes back empty.
+  `partial 20:00-21:00` for it. A `?` means the branch's booking list or its list
+  of locked slots could not be read — the API rejects a date outside the branch's
+  booking window, and its clock is the venue's (UTC+7), so a date that is already
+  past in Vietnam comes back empty.
   Prices follow availability and opening hours: a court is quoted for the part of
   the window it can actually sell (see **You are quoted for what you can book**),
   so two rows with different `hours` are not directly comparable on total alone —

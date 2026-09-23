@@ -42,6 +42,9 @@ courts at once, so one payload entry becomes one **leg per court**
 
 A court is free for a window exactly when **no leg overlaps it**
 (`availability.court_availability`); there is no separate "free slots" endpoint.
+A branch also keeps some slots locked for its own courts
+(`get_lock_yards` below), which occupy a court just as firmly while holding it for
+nobody — both come off the window.
 
 ## The verdict is per window, not per court
 
@@ -83,6 +86,68 @@ a `0` base), and such an hour is trimmed off the window instead of being offered
 at nothing. It is rarely a whole hour on its own — La Khê prices 22:00-23:00,
 while SELA, whose table stops at 22:00, is offered for 20:00-22:00 only.
 
+## The slots the venue keeps locked ("Khóa")
+
+A booking is not the only thing that makes a court unsellable. A branch can also
+keep its own courts off sale for a stretch — the app's booking grid paints those
+**grey** and refuses to book them (the legend's "Khóa") — and it does so far more
+often than its bookings suggest: 125 Hoàng Ngân states hours of 05:00-**24:00**,
+yet locks **22:00-24:00 every day** for all eight courts, so an 18:00-23:59
+search has nothing to sell after 22:00. Reading only `get_onetime_bookings` calls
+those hours free: the complaint that started this was a court offered as
+`partial 22:00-23:59` when the app will not book a minute of it.
+
+```
+GET {global_url}/v2/user/branch/get_lock_yards/{branchId}
+```
+
+**Public — no account, no token**, and a branch-level list rather than a
+per-date one, so one call covers every day:
+
+```json
+[
+  {
+    "id": "98k2uiSVy9ZKu2D3m624",
+    "servicesId": ["pickleball_1", "pickleball_2", "...", "pickleball_8"],
+    "startTime": "2025-12-04T22:00:00.000",
+    "endTime": "2025-12-04T23:59:59.000",
+    "frequency": [1, 2, 3, 4, 5, 6, 7],
+    "skipDates": [],
+    "note": ""
+  }
+]
+```
+
+`frequency` decides which of two things an entry is, and the **dates** on
+`startTime`/`endTime` are never a range:
+
+| `frequency` | Meaning |
+|---|---|
+| a weekday list (`1`=Mon … `7`=Sun) | a **recurring** window: `startTime`..`endTime` read as a *time of day*, blocked on every day whose weekday is listed, except `skipDates` |
+| empty | a **one-off**: the exact `startTime`..`endTime` stretch, on the date it names and no other |
+
+Both readings were confirmed against `main.dart.js`, which carries only those two
+branches of logic: the lock model matches on `frequency.contains(day.weekday)` for
+a listed frequency and on `startTime`'s calendar date for an empty one, and the
+grid painter then draws the lock's *clock* hours (`startTime.hour` .. `endTime.hour`,
+clamped to the grid) down that day's column. The dates riding along are just the
+day the lock was filed — hence the 22:00-24:00 entry above, filed 2025-12-04,
+still greying today's grid, and hence Hoàng Ngân's own bookings never starting
+before 05:30 (a 05:00-05:30 lock has been filed daily since 2025 too).
+
+`servicesId` names the courts the entry takes off. Whole-day closures are filed
+as one-offs (05:00-23:59:59 on a single date), which is why a lock's end is
+rounded **up to the next minute**: `23:59:59` means "through midnight", and
+keeping the leftover second would leave a bookable minute at the end of a window
+asked to 24:00.
+
+The bot subtracts these from the window exactly as it subtracts a booking
+(`models.LockYard`, `availability._locked_spans`), so a court free only in a
+locked stretch reads `partial` up to the lock rather than `available`, and one
+locked for the whole window is dropped like a booked one. A lock list that cannot
+be read marks the branch's courts `unknown` — the same "no answer" a failed
+booking lookup gives, never "free".
+
 ## Quirks worth knowing (all handled)
 
 - **Dates are the venue's local day (UTC+7).** A day before the venue's today is
@@ -100,15 +165,22 @@ while SELA, whose table stops at 22:00, is offered for 20:00-22:00 only.
 - **`status` was `1` on every live booking** and `type` was `groupOneTime`; a
   cancelled booking was never observed, so the bot treats every returned leg as
   occupying its court rather than second-guessing `status`.
-- **The branch list keeps withdrawn venues.** A branch whose `status` is `-1`
-  (locked — its name often says so, e.g. "789 Pickleball Club (đã khóa tạo cn
-  mới)" or "(khóa)Stamina …") or `-2` (removed) is still returned by both
-  `/v2/user/branch/branches` and `branches_first`, and its `get_cores` /
-  `get_core_types` / `get_onetime_bookings` calls answer normally — so a locked
-  venue prices up and looks free. The app drops exactly these two codes
-  (`main.dart.js`: `![-2,-1].contains(branch.status)`) before it lists anything;
-  the bot does the same (`models.Branch.is_locked`), because their courts and
-  tickets are no longer for sale. `status` `0` and `1` are live and are kept.
+- **The branch list keeps venues the app will not sell.** `/v2/user/branch/
+  branches` and `branches_first` return every venue, and `get_cores` /
+  `get_core_types` / `get_onetime_bookings` answer normally for the unbookable
+  ones too — so such a venue prices up and looks free. `status` is the field
+  that separates them, and the app's own search settles the rule exactly:
+  `get_filtered_branch_booking` returned 2058 branches, *all* of them
+  `status == 1` (2058 of the 2059), and none of the 352 `status == 0` ones nor
+  any `-1`/`-2`/`2`. Confirmed against the live site: a `status == 0` venue
+  ("CLB  PICKLEBALL", `sport_clb_tennis_pickleball_cau_giay`, address the
+  placeholder "Ha Noi") and a `status == -1` one cannot be booked from their
+  `/san/{id}` pages, while a `status == 1` venue books normally. `-1`/`-2` are
+  locked/removed (the name often says so: "(khóa)", "(đã khóa tạo cn mới)"); `0`
+  is a draft or paused listing that can still hold bookings the venue took itself
+  (several `status == 0` venues show recent bookings) yet cannot be booked by a
+  customer. The bot keeps only `status == 1` (`models.Branch.is_bookable`), a
+  missing `status` counting as bookable.
 - **Month-level schedules are separate.** The app also calls
   `get_schedule_bookings?branchId=&month=YYYY-MM`, which returned `[]` for every
   branch tried. It is not needed to answer "is this court free", so the bot
@@ -130,4 +202,13 @@ alobo-bot find --place "Hà Nội" --date 2026-09-23 --from 18:00 --to 21:00
 
 # hides the ones already taken
 alobo-bot find --place "Hà Nội" --date 2026-09-23 --from 18:00 --to 21:00 --availability free
+```
+
+To re-check the locks by hand, compare the bot's answer for a venue against its
+grid on `datlich.alobo.vn/san/{branchId}` (the grid's grey "Khóa" cells must be
+outside every `free span` the bot reports), and against the raw payloads:
+
+```bash
+# the locks a branch filed, and the bookings that must never cross them
+curl -s "$GLOBAL/v2/user/branch/get_lock_yards/sport_125_hoang_ngan" -H "$HEADERS"
 ```

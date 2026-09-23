@@ -21,7 +21,7 @@ from typing import Any
 
 from . import __version__
 from .crypto import decrypt_body, encrypt_body, signature
-from .models import Booking, Branch, Core, CoreType, SocialSession, SportType
+from .models import Booking, Branch, Core, CoreType, LockYard, SocialSession, SportType
 
 
 class ApiError(RuntimeError):
@@ -202,10 +202,17 @@ class AloboClient:
         data = self._data(payload)
         return [CoreType.from_api(item) for item in (data or [])]
 
-    def get_lock_yards(self, branch_id: str) -> list[dict]:
+    def get_lock_yards(self, branch_id: str) -> list[LockYard]:
+        """The slots a branch keeps its own courts off sale for — the app's "Khóa".
+
+        Public and login-free, and a branch-level list rather than a per-date one:
+        each entry names the courts it takes off and how it repeats, so one answer
+        covers every day. A court nobody has booked can still be unsellable in a
+        locked slot, so callers that report availability must subtract these too —
+        see :class:`alobo_bot.models.LockYard`.
+        """
         payload = self.request(f"{self.global_url}/v2/user/branch/get_lock_yards/{branch_id}")
-        data = self._data(payload)
-        return list(data or [])
+        return [LockYard.from_api(item) for item in (self._data(payload) or []) if isinstance(item, dict)]
 
     def get_onetime_bookings(self, branch_id: str, day: dt.date) -> list[Booking]:
         """The bookings a branch has already taken on *day*.

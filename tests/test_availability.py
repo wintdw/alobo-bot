@@ -10,12 +10,21 @@ from alobo_bot.availability import (
     label,
     spans_label,
 )
-from alobo_bot.models import Booking
+from alobo_bot.models import Booking, LockYard
 
 
 def booking(core_id, hour, duration=120, minute=0):
     return Booking(id=f"b-{core_id}-{hour}", core_id=core_id, duration_min=duration,
                    start=dt.datetime(2026, 9, 23, hour, minute))
+
+
+def lock(core_id, start_minute, end_minute, weekdays=(1, 2, 3, 4, 5, 6, 7)):
+    """A locked slot for one court, keeping it off sale daily in that minute range."""
+    midnight = dt.datetime(2026, 9, 23)
+    return LockYard(id=f"l-{core_id}", core_ids=(core_id,),
+                    start=midnight + dt.timedelta(minutes=start_minute),
+                    end=midnight + dt.timedelta(minutes=end_minute),
+                    weekdays=weekdays)
 
 
 def window(start_hour, end_hour):
@@ -123,3 +132,49 @@ def test_spans_label_lists_every_open_span():
         (dt.datetime(2026, 9, 23, 20, 0), dt.datetime(2026, 9, 23, 21, 0)),
     ]
     assert spans_label(spans) == "18:00-19:00, 20:00-21:00"
+
+
+# --- slots the venue keeps locked --------------------------------------------
+# A lock occupies a court exactly as a booking does while holding it for nobody:
+# the app paints it grey and refuses to book it, so it must come off the window.
+
+
+def test_a_locked_slot_is_not_free_even_though_nobody_booked_it():
+    locks = [lock("c1", 22 * 60, 24 * 60)]  # kept off sale 22:00-24:00 daily
+    assert free_spans([], "c1", *window(18, 23), locks) == [window(18, 22)]
+    status, spans = court_availability([], "c1", *window(18, 23), locks)
+    assert status == PARTIAL
+    assert spans_label(spans) == "18:00-22:00"
+
+
+def test_a_lock_covering_the_whole_window_leaves_nothing_to_sell():
+    locks = [lock("c1", 18 * 60, 21 * 60)]
+    assert court_availability([], "c1", *window(18, 21), locks) == (BOOKED, [])
+
+
+def test_a_lock_on_another_court_leaves_this_one_free():
+    locks = [lock("c2", 18 * 60, 21 * 60)]
+    assert free_spans([], "c1", *window(18, 21), locks) == [window(18, 21)]
+
+
+def test_a_lock_and_a_booking_merge_into_one_taken_stretch():
+    # 18:00-20:00 booked and 20:00-22:00 locked covers the window either way.
+    locks = [lock("c1", 20 * 60, 22 * 60)]
+    assert court_availability([booking("c1", 18)], "c1", *window(18, 22), locks) == (BOOKED, [])
+
+
+def test_a_one_off_lock_blocks_only_the_date_it_names():
+    locks = [LockYard(id="l1", core_ids=("c1",), start=dt.datetime(2026, 9, 24, 18, 0),
+                      end=dt.datetime(2026, 9, 24, 21, 0))]
+    assert free_spans([], "c1", *window(18, 21), locks) == [window(18, 21)]  # the 23rd is untouched
+    assert court_availability([], "c1", dt.datetime(2026, 9, 24, 18, 0),
+                              dt.datetime(2026, 9, 24, 21, 0), locks) == (BOOKED, [])
+
+
+def test_a_window_crossing_midnight_honours_the_locks_on_both_days():
+    # Locked daily 23:00-01:00, so a 22:00-01:00 window is open in its first hour only.
+    locks = [lock("c1", 23 * 60, 25 * 60)]
+    assert free_spans([], "c1", dt.datetime(2026, 9, 23, 22, 0),
+                      dt.datetime(2026, 9, 24, 1, 0), locks) == [
+        (dt.datetime(2026, 9, 23, 22, 0), dt.datetime(2026, 9, 23, 23, 0)),
+    ]

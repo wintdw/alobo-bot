@@ -25,11 +25,12 @@ does both, a single one skips the other's work entirely.
 
 Every priced court is also tagged with its **availability** for the window
 (``free``/``partial``/``?``; see :mod:`alobo_bot.availability`), read from the
-branch's public booking list, and priced for the part of the window it can
-actually sell: a court free for one hour of five is quoted for that hour. A court
-with no open time left is not a result at all. ``availability`` picks whether
-partly-free courts are kept (``any``) or only those free for the whole window
-(``free``).
+branch's public booking list *and* from the slots the venue keeps locked for its
+own courts — a court nobody has booked is still not for sale in a locked slot.
+The court is priced for the part of the window it can actually sell: a court free
+for one hour of five is quoted for that hour. A court with no open time left is
+not a result at all. ``availability`` picks whether partly-free courts are kept
+(``any``) or only those free for the whole window (``free``).
 """
 
 from __future__ import annotations
@@ -48,6 +49,7 @@ from .models import (
     Core,
     CoreType,
     CourtOption,
+    LockYard,
     PriceTable,
     PriceTarget,
     SocialSession,
@@ -344,13 +346,14 @@ def _sport_branches(branches: list[Branch], query: FindQuery, sport_value: int) 
 
     ``branch.type`` is the sport the venue is listed under; when no branch
     declares it (some payloads leave it off), fall back to its name so a
-    name-only match still works. Locked/removed venues are dropped here: the
-    branch list keeps them (so the app can show a "site closed" page), but their
-    courts are no longer for sale, so they are not results to price.
+    name-only match still works. Venues the booking app will not sell are dropped
+    here (see :attr:`alobo_bot.models.Branch.is_bookable`): the branch list keeps
+    them so the app can show a "site closed"/"not accepting bookings" page, but
+    their courts are not for sale, so they are not results to price.
     """
-    sporty = [b for b in branches if not b.is_locked and b.sport_type == sport_value]
+    sporty = [b for b in branches if b.is_bookable and b.sport_type == sport_value]
     if not sporty:
-        sporty = [b for b in branches if not b.is_locked and query.sport in normalize(b.name)]
+        sporty = [b for b in branches if b.is_bookable and query.sport in normalize(b.name)]
     return sporty
 
 
@@ -527,9 +530,12 @@ def _mark_availability(client: AloboClient, res: BranchResult, query: FindQuery)
     """Tag each of a branch's priced courts free/booked/partial for the window.
 
     The window is the venue's bookable part of the request (see
-    :func:`bookable_window`), so an open span never runs past closing time. The
-    lookup is public and never fatal: a branch whose bookings cannot be read (a
-    date outside its booking window, a transient failure) leaves its courts
+    :func:`bookable_window`), so an open span never runs past closing time. Both
+    signals are read: the bookings other people hold, and the slots the venue
+    itself keeps off sale (``get_lock_yards`` — a court can be booked by nobody and
+    still be unsellable, which is how many branches end their evening). The
+    lookups are public and never fatal: a branch whose bookings or locks cannot be
+    read (a date outside its booking window, a transient failure) leaves its courts
     marked ``unknown`` rather than dropping them.
     """
     window = bookable_window(res.branch, query.start_minute, query.end_minute)
@@ -541,16 +547,20 @@ def _mark_availability(client: AloboClient, res: BranchResult, query: FindQuery)
         days.append(end.date())
 
     bookings: list[Booking] = []
+    locks: list[LockYard] = []
     try:
         for day in days:
             bookings.extend(client.get_onetime_bookings(res.branch.id, day))
+        locks = client.get_lock_yards(res.branch.id)
     except Exception:  # noqa: BLE001 - availability is a bonus, never fatal
         for opt in res.options:
             opt.available = UNKNOWN
         return
 
     for opt in res.options:
-        opt.available, opt.free_spans = court_availability(bookings, opt.core.id, start, end)
+        opt.available, opt.free_spans = court_availability(
+            bookings, opt.core.id, start, end, locks
+        )
         if opt.available == PARTIAL:
             _reprice_for_open_time(opt, query, start)
 
@@ -641,7 +651,7 @@ def _attach_sessions(client: AloboClient, result: FindResult, query: FindQuery, 
     branches: dict[str, Branch] = {}
     tickets: dict[str, list[SocialSession]] = {}
     for branch, sessions in pairs:
-        if branch.is_locked:  # a withdrawn venue's tickets are no longer on sale
+        if not branch.is_bookable:  # a venue the booking app will not sell
             continue
         kept = [
             session
