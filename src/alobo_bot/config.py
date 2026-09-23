@@ -70,6 +70,10 @@ DEFAULTS: dict[str, Any] = {
     },
     "report": {"dir": "data/reports"},
     "raw": {"dir": "data/raw"},
+    # Durable state that survives a restart: the /status counters and the
+    # recent-search result cache. Lives on the host so a container bounce resumes
+    # rather than starting from zero (bound the same way as reports/raw).
+    "state": {"dir": "data/state"},
 }
 
 
@@ -85,8 +89,8 @@ def _deep_merge(base: dict, override: dict) -> dict:
 
 
 def _resolve_paths(cfg: dict, root: pathlib.Path) -> dict:
-    """Turn root-relative path values (report.dir, raw.dir) into absolute paths."""
-    for section in ("report", "raw"):
+    """Turn root-relative path values (report.dir, raw.dir, state.dir) into absolute paths."""
+    for section in ("report", "raw", "state"):
         value = cfg.get(section, {}).get("dir")
         if isinstance(value, str):
             cfg[section]["dir"] = str((root / value).resolve())

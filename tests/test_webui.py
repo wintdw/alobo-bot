@@ -1,5 +1,6 @@
 import datetime as dt
 
+from alobo_bot.metrics import ClientStat, Snapshot
 from alobo_bot.models import Branch, Core, CoreType, CourtOption, SocialSession
 from alobo_bot.search import BranchResult, FindQuery, FindResult
 from alobo_bot.web import (
@@ -10,11 +11,18 @@ from alobo_bot.web import (
 )
 from alobo_bot.webui import (
     esc,
+    format_age,
+    format_bytes,
+    format_ms,
+    format_percent,
+    format_uptime,
+    format_window,
     render_courts,
     render_page,
     render_results,
     render_results_region,
     render_social,
+    render_status,
 )
 
 SPORTS = [("pickleball", "Pickleball"), ("badminton", "Cầu lông")]
@@ -587,3 +595,169 @@ def test_find_is_progressive_enhancement_over_a_plain_get_form():
     # the enhancement is gated on the APIs it needs, so an old browser navigates
     assert "window.fetch && window.history.pushState" in page
     assert 'id="results"' in page and "aria-busy" in page
+
+
+def test_render_page_can_embed_a_pre_rendered_fragment():
+    # the cache stores the rendered region, so a reload re-embeds it verbatim
+    page = render_page(sports=SPORTS, areas=AREAS, query={}, results_html="<p>cached run</p>")
+    assert '<div id="results" aria-live="polite" aria-busy="false"><p>cached run</p></div>' in page
+
+
+# --- the durable result cache -----------------------------------------------
+
+def test_the_result_cache_survives_a_restart(tmp_path):
+    path = tmp_path / "cache.json"
+    now = dt.datetime.now()
+    ResultCache(path=path).put(query_key(SEARCH), "<section>courts</section>", now)
+
+    # a fresh instance (as after a restart) reads the entry back off disk
+    assert ResultCache(path=path).get(query_key(SEARCH), now) == "<section>courts</section>"
+
+
+def test_a_cache_file_entry_past_the_reuse_window_is_dropped_on_load(tmp_path):
+    path = tmp_path / "cache.json"
+    ResultCache(path=path).put(query_key(SEARCH), "old", dt.datetime(2020, 1, 1))
+
+    assert ResultCache(path=path).get(query_key(SEARCH)) is None
+
+
+def test_a_corrupt_cache_file_starts_empty(tmp_path):
+    path = tmp_path / "cache.json"
+    path.write_text("{not json")
+    assert ResultCache(path=path).get(query_key(SEARCH)) is None
+
+
+def test_result_cache_stats_report_what_is_held():
+    cache = ResultCache(max_entries=4)
+    now = dt.datetime(2026, 9, 23, 18, 30)
+    cache.put(query_key(SEARCH), "a", now - dt.timedelta(minutes=10))
+    cache.put(query_key({**SEARCH, "from": "19:00"}), "b", now)
+
+    stats = cache.stats(now=now)
+    assert stats["entries"] == 2 and stats["capacity"] == 4
+    assert stats["reuse_seconds"] == RESULT_REUSE_SECONDS
+    assert stats["newest_age"] == 0.0
+    assert stats["oldest_age"] == 600.0
+    assert stats["path"] is None
+
+
+def test_an_empty_cache_reports_no_ages():
+    stats = ResultCache().stats()
+    assert stats["entries"] == 0
+    assert stats["newest_age"] is None and stats["oldest_age"] is None
+
+
+# --- the status page ---------------------------------------------------------
+
+def status_snapshot(**overrides):
+    values = dict(
+        started_at=dt.datetime(2026, 9, 23, 18, 0),
+        now=dt.datetime(2026, 9, 23, 18, 5),
+        requests=0, in_flight=0, errors=0, by_path={}, by_status={},
+        latency_ms_avg=None, latency_ms_max=None, clients_seen=0, clients=[],
+        searches=0, search_failures=0, search_busy=0, cache_hits=0, cache_misses=0,
+        busy=False, last_run=None, last_error=None,
+    )
+    values.update(overrides)
+    return Snapshot(**values)
+
+
+def test_status_page_reports_the_vital_metrics():
+    page = render_status(status_snapshot(), version="0.1.0", sport="pickleball")
+    assert page.startswith("<!DOCTYPE html>")
+    assert "<title>Alobo | Status</title>" in page
+    for label in ("Requests", "In flight", "Errors", "Error rate", "Unique clients",
+                  "Completed", "Cache hit rate", "Requests by path", "Responses by status code"):
+        assert label in page
+    # empty tables say so rather than rendering nothing
+    assert "no data yet" in page
+    # a monitoring tab keeps itself current and points at the machine view
+    assert 'http-equiv="refresh" content="30"' in page
+    assert '<a href="/status.json">/status.json</a>' in page
+
+
+def test_status_page_is_not_linked_from_the_search_page():
+    page = render_page(sports=SPORTS, areas=AREAS, query={})
+    assert "/status" not in page
+
+
+def test_status_page_shows_traffic_clients_and_errors():
+    page = render_status(
+        status_snapshot(
+            requests=5, errors=1, by_path={"/": 3, "/status": 2}, by_status={200: 4, 500: 1},
+            clients_seen=1, latency_ms_avg=15.0, latency_ms_max=30.0,
+            clients=[ClientStat(ip="1.2.3.4", requests=5,
+                                first_seen=dt.datetime(2026, 9, 23, 18, 0),
+                                last_seen=dt.datetime(2026, 9, 23, 18, 5),
+                                last_path="/", last_status=500)],
+            last_error="ApiError: boom",
+        ),
+        version="0.1.0", sport="pickleball",
+    )
+    assert "1.2.3.4" in page
+    assert "5xx" in page and "4" in page           # the status-code table
+    assert "20.0%" in page                          # error rate 1/5
+    assert "ApiError: boom" in page and 'role="alert"' in page
+
+
+def test_status_page_escapes_the_last_error():
+    page = render_status(status_snapshot(last_error="<script>alert(1)</script>"),
+                         version="0.1.0", sport="pickleball")
+    assert "<script>alert(1)</script>" not in page
+    assert "&lt;script&gt;" in page
+
+
+def test_status_page_names_the_persisted_state_and_lists_reports():
+    page = render_status(
+        status_snapshot(), version="0.1.0", sport="pickleball",
+        state_path="/app/data/state", report_dir="/app/data/reports",
+        reports=[{"name": "cheapest.md", "modified": dt.datetime(2026, 9, 23, 18, 4), "bytes": 2048}],
+    )
+    assert "/app/data/state" in page and "resumed on restart" in page
+    assert "cheapest.md" in page and "2.0 KB" in page and "/app/data/reports" in page
+
+
+def test_status_page_reports_the_cache_state():
+    page = render_status(
+        status_snapshot(cache_hits=3, cache_misses=1),
+        version="0.1.0", sport="pickleball",
+        cache={"entries": 7, "capacity": 32, "reuse_seconds": 900,
+               "newest_age": 65, "oldest_age": 610, "path": "/app/data/state/cache.json"},
+    )
+    assert "7 / 32" in page                       # how full the cache is
+    assert "15 min" in page                       # its reuse window
+    assert "1m 5s ago" in page and "10m 10s ago" in page  # newest / oldest entry
+    assert "75.0%" in page                        # hit rate 3 of 4
+    assert "/app/data/state/cache.json" in page    # and where it is persisted
+
+
+def test_status_page_says_when_the_cache_is_memory_only():
+    page = render_status(status_snapshot(), version="0.1.0", sport="pickleball",
+                         cache=ResultCache().stats())
+    assert "in memory only" in page
+    # no entries yet: the ages read as unknown rather than a bogus zero
+    assert "0 / 32" in page
+
+
+def test_status_refresh_can_be_turned_off():
+    page = render_status(status_snapshot(), version="0.1.0", sport="pickleball",
+                         refresh_seconds=0)
+    assert "http-equiv=\"refresh\"" not in page
+
+
+def test_status_format_helpers():
+    assert format_uptime(0) == "0m 0s"
+    assert format_uptime(90) == "1m 30s"
+    assert format_uptime(3661) == "1h 1m 1s"
+    assert format_uptime(90061) == "1d 1h 1m"
+    assert format_ms(None) == "—"
+    assert format_ms(3.25) == "3.2 ms"
+    assert format_ms(1500) == "1,500 ms"
+    assert format_percent(0.2) == "20.0%"
+    assert format_bytes(0) == "0 B"
+    assert format_bytes(2048) == "2.0 KB"
+    assert format_bytes(5 * 1024 * 1024) == "5.0 MB"
+    assert format_window(900) == "15 min"
+    assert format_window(5400) == "1.5 h"
+    assert format_age(None) == "—"
+    assert format_age(65) == "1m 5s ago"

@@ -21,9 +21,12 @@ src/alobo_bot/
   availability.py  free/booked/partial verdict for a court in a window
   search.py      shortlist branches -> price courts -> rank
   report.py      text / markdown / JSON rendering + report writing
+  metrics.py     durable counters behind /status (requests, clients, searches)
+  state.py       atomic JSON read/write for the durable state files
   webui.py       server-rendered HTML page (pure functions, no FastAPI)
   cli.py         `find`, `sports`, `serve`
-  web.py         FastAPI wiring: GET / page, POST /find, /report.json, /health
+  web.py         FastAPI wiring: GET / page, POST /find, /report.json,
+                 /health, /status (+ /status.json)
 tests/         pytest, pure logic only (no network)
 scripts/       recover_api_keys.py — decode the web app's obfuscated build keys
 docs/          reverse-engineering notes: updating-api-keys.md,
@@ -66,6 +69,11 @@ docs/          reverse-engineering notes: updating-api-keys.md,
   open spans, and a fully booked one is dropped: it has nothing left to sell, so
   quoting the full window would invent a price for hours somebody else holds.
 - Keep `data/` git-ignored; it holds reports and raw snapshots.
+- **Durable state lives on the host.** The `/status` counters (`metrics.py`) and
+  the result cache (`web.py`) are written under `state.dir` (`data/state/`) and
+  read back at start, so a restart resumes instead of resetting — keep that dir on
+  the same bind mount as `data/`. `/status` is a monitoring view and is
+  deliberately **not linked** from the public page.
 
 ## Keeping up with the app (API keys)
 

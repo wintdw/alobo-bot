@@ -15,6 +15,7 @@ import urllib.parse
 
 from .report import area_label, hours_label, money
 from .availability import label as availability_label
+from .metrics import Snapshot, status_class
 from .pricing import ClockError, parse_clock
 from .search import FindResult
 
@@ -158,6 +159,22 @@ footer { color:var(--muted); font-size:.8rem; padding-block:2.5rem 3rem;
 .footer-fineprint { margin:1.75rem 0 0; padding-block-start:1.25rem;
   border-block-start:1px solid var(--line); max-width:52rem; }
 @media (max-width: 40rem) { .footer-grid { grid-template-columns:1fr; } }
+.status-grid { display:grid; gap:.75rem; margin-block-end:1rem;
+  grid-template-columns:repeat(auto-fit, minmax(11rem, 1fr)); }
+.metric { display:flex; flex-direction:column; gap:.2rem; padding:.85rem 1rem;
+  background:var(--card); border:1px solid var(--line); border-radius:var(--radius);
+  box-shadow:var(--shadow); min-inline-size:0; }
+.metric-value { font-size:1.3rem; font-weight:700; line-height:1.2; overflow-wrap:anywhere;
+  font-variant-numeric:tabular-nums; letter-spacing:-.01em; }
+.metric-label { font-size:.72rem; font-weight:700; text-transform:uppercase;
+  letter-spacing:.07em; color:var(--muted); }
+.metric-hint { font-size:.78rem; color:var(--muted); }
+.metric-warn .metric-value { color:var(--warn); }
+.metric-live .metric-value { color:var(--accent); }
+section.status { margin-block-start:1.9rem; }
+section.status h2 { margin-block-start:0; }
+section.status .lead { color:var(--muted); margin:0 0 .9rem; }
+.status-note { color:var(--muted); font-size:.82rem; margin:.6rem 0 0; }
 """.strip()
 
 SCRIPT = """
@@ -743,9 +760,17 @@ def render_page(
     presets: dict[str, tuple[float, float]] | None = None,
     query: dict | None = None,
     result: FindResult | None = None,
+    results_html: str | None = None,
     error: str | None = None,
 ) -> str:
-    """The whole page: header, search form, then results (or an error)."""
+    """The whole page: header, search form, then results (or an error).
+
+    *results_html* lets the caller hand in an already-rendered results region —
+    the cache stores the fragment so a reload can re-embed it verbatim without
+    holding the result object. When it is None the region is rendered from
+    *result*/*error* as usual.
+    """
+    region = results_html if results_html is not None else render_results_region(result, error)
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -765,7 +790,7 @@ def render_page(
 <main id="content" tabindex="-1">
   <h2>Search criteria</h2>
   {render_form(query or {}, sports, areas, presets)}
-  <div id="results" aria-live="polite" aria-busy="false">{render_results_region(result, error)}</div>
+  <div id="results" aria-live="polite" aria-busy="false">{region}</div>
 </main>
 <footer>
   <div class="footer-grid">
@@ -789,6 +814,276 @@ def render_page(
      public API (datlich.alobo.vn).</p>
 </footer>
 <script>{SCRIPT}</script>
+</body>
+</html>
+"""
+
+
+# ---------------------------------------------------------------- status page
+# The operational view (:mod:`alobo_bot.metrics` counts; this renders). It is not
+# linked from the public page — reach it at /status directly. A plain server-side
+# render like the rest of the app: no JavaScript, so it works from curl too, and a
+# meta refresh keeps a browser tab current for a human watching the service.
+
+STATUS_REFRESH_SECONDS = 30
+
+ENDPOINT_HEADERS = [("Path", False), ("Requests", True)]
+CODE_HEADERS = [("Status", False), ("Class", False), ("Count", True)]
+CLIENT_HEADERS = [
+    ("Client", False), ("Requests", True), ("Last path", False),
+    ("Last status", True), ("Last seen", False),
+]
+REPORT_HEADERS = [("File", False), ("Modified", False), ("Size", True)]
+
+
+def format_uptime(seconds: float) -> str:
+    """Uptime as ``2d 3h 4m``, dropping units that are zero above the minute."""
+    total = int(max(seconds, 0))
+    days, rest = divmod(total, 86400)
+    hours, rest = divmod(rest, 3600)
+    minutes, secs = divmod(rest, 60)
+    parts: list[str] = []
+    if days:
+        parts.append(f"{days}d")
+    if days or hours:
+        parts.append(f"{hours}h")
+    parts.append(f"{minutes}m")
+    if not days:
+        parts.append(f"{secs}s")
+    return " ".join(parts)
+
+
+def format_moment(moment: dt.datetime | None) -> str:
+    """A timestamp for the status tables, or an em dash when there is none."""
+    return moment.strftime("%Y-%m-%d %H:%M:%S") if moment else "—"
+
+
+def format_ms(value: float | None) -> str:
+    """A duration in milliseconds, or an em dash before the first request."""
+    if value is None:
+        return "—"
+    return f"{value:,.0f} ms" if value >= 10 else f"{value:.1f} ms"
+
+
+def format_percent(value: float) -> str:
+    return f"{value * 100:.1f}%"
+
+
+def format_window(seconds: float) -> str:
+    """A duration as a coarse window, e.g. ``15 min``."""
+    minutes = float(seconds) / 60
+    return f"{minutes:.0f} min" if minutes < 60 else f"{minutes / 60:.1f} h"
+
+
+def format_age(seconds: float | None) -> str:
+    """A duration as an age, e.g. ``2m 5s ago`` (an em dash when unknown)."""
+    return "—" if seconds is None else f"{format_uptime(seconds)} ago"
+
+
+def format_bytes(value: int) -> str:
+    """A byte count in its largest sensible unit, e.g. ``12.3 KB``."""
+    size = float(max(value, 0))
+    for unit in ("B", "KB", "MB", "GB"):
+        if size < 1024 or unit == "GB":
+            return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
+        size /= 1024
+    return f"{size:.1f} GB"
+
+
+def _count(value: int) -> str:
+    return f"{value:,}"
+
+
+def metric(label: str, value: str, *, hint: str = "", tone: str = "") -> str:
+    """One number on the status page: its value over its label."""
+    class_name = f"metric metric-{tone}" if tone else "metric"
+    hint_html = f'<span class="metric-hint">{esc(hint)}</span>' if hint else ""
+    return (
+        f'<div class="{class_name}">'
+        f'<span class="metric-value">{esc(value)}</span>'
+        f'<span class="metric-label">{esc(label)}</span>'
+        f"{hint_html}</div>"
+    )
+
+
+def status_table(caption: str, headers: list[tuple[str, bool]], rows: list[list[str]]) -> str:
+    """A small table for the status page; numeric columns get the tabular style."""
+    head_cells = []
+    for text, numeric in headers:
+        css = ' class="num"' if numeric else ""
+        head_cells.append(f'<th scope="col"{css}>{esc(text)}</th>')
+    if rows:
+        body_rows = []
+        for row in rows:
+            cells = []
+            for index, cell in enumerate(row):
+                numeric = headers[index][1] if index < len(headers) else False
+                css = ' class="num"' if numeric else ""
+                cells.append(f"<td{css}>{esc(cell)}</td>")
+            body_rows.append(f"<tr>{''.join(cells)}</tr>")
+        body = "".join(body_rows)
+    else:
+        body = f'<tr><td colspan="{max(len(headers), 1)}" class="venue-sub">no data yet</td></tr>'
+    return (
+        '<div class="table-wrap"><table>'
+        f"<caption>{esc(caption)}</caption>"
+        f'<thead><tr>{"".join(head_cells)}</tr></thead>'
+        f"<tbody>{body}</tbody>"
+        "</table></div>"
+    )
+
+
+def _status_section(key: str, title: str, lead: str, body: str) -> str:
+    lead_html = f'<p class="lead">{esc(lead)}</p>' if lead else ""
+    return (
+        f'<section class="status" aria-labelledby="{key}-title">'
+        f'<h2 id="{key}-title">{esc(title)}</h2>{lead_html}{body}</section>'
+    )
+
+
+def render_status(
+    snapshot: Snapshot,
+    *,
+    version: str,
+    sport: str,
+    state_path: str = "",
+    report_dir: str = "",
+    reports: list[dict] | None = None,
+    cache: dict | None = None,
+    refresh_seconds: int = STATUS_REFRESH_SECONDS,
+) -> str:
+    """The whole ``/status`` page from one :class:`~alobo_bot.metrics.Snapshot`.
+
+    Pure, like the rest of :mod:`webui`: everything it shows comes from the
+    snapshot, the cache's own ``stats()`` and the report listing the caller reads
+    off disk, so it can be rendered in a test without a server.
+    """
+    service = "".join([
+        metric("State", "Searching" if snapshot.busy else "Idle",
+               hint="one search at a time", tone="live" if snapshot.busy else ""),
+        metric("Uptime", format_uptime(snapshot.uptime_seconds), hint="this process"),
+        metric("Started", format_moment(snapshot.started_at)),
+        metric("Version", version),
+        metric("Sport", sport),
+        metric("Last search", format_moment(snapshot.last_run)),
+    ])
+    traffic = "".join([
+        metric("Requests", _count(snapshot.requests)),
+        metric("In flight", _count(snapshot.in_flight)),
+        metric("Errors", _count(snapshot.errors), tone="warn" if snapshot.errors else ""),
+        metric("Error rate", format_percent(snapshot.error_rate),
+               tone="warn" if snapshot.errors else ""),
+        metric("Avg response", format_ms(snapshot.latency_ms_avg)),
+        metric("Max response", format_ms(snapshot.latency_ms_max)),
+    ])
+    searches = "".join([
+        metric("Completed", _count(snapshot.searches)),
+        metric("Failures", _count(snapshot.search_failures),
+               tone="warn" if snapshot.search_failures else ""),
+        metric("Busy rejections", _count(snapshot.search_busy)),
+    ])
+    cache = cache or {}
+    entries = cache.get("entries")
+    capacity = cache.get("capacity")
+    cache_fill = (
+        f"{_count(entries)} / {_count(capacity)}"
+        if isinstance(entries, int) and isinstance(capacity, int) else "—"
+    )
+    window = cache.get("reuse_seconds")
+    cache_metrics = "".join([
+        metric("Entries", cache_fill, hint="recent searches kept"),
+        metric("Reuse window", format_window(window) if window else "—",
+               hint="how long a result is reused"),
+        metric("Newest entry", format_age(cache.get("newest_age"))),
+        metric("Oldest entry", format_age(cache.get("oldest_age"))),
+        metric("Cache hits", _count(snapshot.cache_hits)),
+        metric("Cache misses", _count(snapshot.cache_misses)),
+        metric("Cache hit rate", format_percent(snapshot.cache_hit_rate)),
+    ])
+    client_metrics = "".join([
+        metric("Unique clients", _count(snapshot.clients_seen),
+               hint=f"last {len(snapshot.clients)} listed"),
+    ])
+
+    endpoint_rows = [
+        [path, _count(count)]
+        for path, count in sorted(snapshot.by_path.items(), key=lambda item: (-item[1], item[0]))
+    ]
+    status_rows = [
+        [str(code), status_class(code), _count(count)]
+        for code, count in sorted(snapshot.by_status.items())
+    ]
+    client_rows = [
+        [client.ip, _count(client.requests), client.last_path, str(client.last_status),
+         format_moment(client.last_seen)]
+        for client in snapshot.clients
+    ]
+    report_rows = [
+        [report["name"], format_moment(report["modified"]), format_bytes(report["bytes"])]
+        for report in (reports or [])
+    ]
+
+    error_html = (
+        f'<p class="error" role="alert">Last search error: {esc(snapshot.last_error)}</p>'
+        if snapshot.last_error else ""
+    )
+    reports_lead = (
+        f"Reports on disk under {esc(report_dir)}: the bot's searchable output."
+        if report_dir else "Reports written by each run."
+    )
+    cache_lead = (
+        f"Rendered results kept for a repeated search, persisted at {esc(cache['path'])}."
+        if cache.get("path")
+        else "Rendered results kept for a repeated search, in memory only."
+    )
+    if state_path:
+        persistence = (
+            f"Counters and the recent-search cache are persisted on the host under "
+            f"<code>{esc(state_path)}</code> and resumed on restart; only the process "
+            f"uptime resets."
+        )
+    else:
+        persistence = "Counters cover this process since it started."
+    refresh = (
+        f'<meta http-equiv="refresh" content="{int(refresh_seconds)}">' if refresh_seconds else ""
+    )
+    refresh_note = f"Auto-refreshes every {int(refresh_seconds)}s. " if refresh_seconds else ""
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+{refresh}
+<title>{BRAND} | Status</title>
+<link rel="icon" href="{FAVICON}" type="image/svg+xml">
+<style>{STYLE}</style>
+</head>
+<body>
+<header>
+  <a class="skip-link" href="#content">Skip to content</a>
+  <h1><a href="/">{LOGO}<span>{BRAND}</span></a></h1>
+  <p class="sub">Service status: live traffic, client and search metrics for this process.</p>
+</header>
+<main id="content" tabindex="-1">
+  {error_html}
+  {_status_section("service", "Service", "", f'<div class="status-grid">{service}</div>')}
+  {_status_section("traffic", "Traffic", "", f'<div class="status-grid">{traffic}</div>')}
+  {_status_section("searches", "Searches", "", f'<div class="status-grid">{searches}</div>')}
+  {_status_section("cache", "Cache", cache_lead,
+                   f'<div class="status-grid">{cache_metrics}</div>')}
+  {_status_section("clients", "Clients", "",
+                   f'<div class="status-grid">{client_metrics}</div>'
+                   + status_table("Most recently active clients", CLIENT_HEADERS, client_rows))}
+  {_status_section("reports", "Reports", reports_lead,
+                   status_table("Report files (newest first)", REPORT_HEADERS, report_rows))}
+  {_status_section("endpoints", "Endpoints", "",
+                   status_table("Requests by path", ENDPOINT_HEADERS, endpoint_rows)
+                   + status_table("Responses by status code", CODE_HEADERS, status_rows))}
+</main>
+<footer>
+  <p class="footer-fineprint">{refresh_note}{persistence}
+     Machine-readable at <a href="/status.json">/status.json</a>.</p>
+</footer>
 </body>
 </html>
 """

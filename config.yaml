@@ -85,3 +85,9 @@ report:
 
 raw:
   dir: data/raw             # dated JSON snapshots of each run
+
+state:
+  # Durable service state, on the host so a restart resumes instead of starting
+  # over: the /status counters (data/state/metrics.json) and the recent-search
+  # result cache (data/state/cache.json). Bind-mounted like the dirs above.
+  dir: data/state

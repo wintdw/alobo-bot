@@ -204,10 +204,32 @@ place, explicit), `--lat/--lng/--radius`, `--date YYYY-MM-DD`, `--from HH:MM`,
 | POST | `/find` | same search, markdown response (for scripts) |
 | GET | `/report.json` | JSON snapshot of the last run |
 | GET | `/health` | service state (busy, last run, last error) |
+| GET | `/status` | monitoring page: traffic, clients, searches and reports (not linked from the page) |
+| GET | `/status.json` | the same counters as JSON, for scraping or alerting |
 
 ```bash
 curl -X POST 'localhost:8085/find?place=H%C3%A0%20N%E1%BB%99i&from=18:00&to=21:00'
 ```
+
+### Monitoring
+
+`GET /status` is a plain server-rendered page for watching the service — it is
+deliberately **not linked from the public search page**, so reach it directly.
+It shows what a human needs at a glance: uptime, request totals by path and
+status code, error rate and latency, the number of distinct clients (with the
+most recently active ones), search counts (completed, failed, single-flight
+rejections), the result cache (entries held vs. capacity, its reuse window,
+newest/oldest entry age, hit/miss counts and hit rate), and the report files on
+disk. `GET /status.json` returns the same counters plus the cache state as JSON.
+It auto-refreshes every 30 seconds.
+
+Those counters and the recent-search result cache are written to disk under
+`state.dir` (`data/state/metrics.json`, `data/state/cache.json`) and read back at
+startup, so a restart — a redeploy, a container bounce — resumes the running
+totals and keeps the warm results of searches run in the last few minutes instead
+of starting from zero. Only the process uptime resets. The files live on the same
+host bind mount as the reports, so nothing is lost when the process is replaced.
+
 
 ## Configuration
 
@@ -221,7 +243,8 @@ for the whole window),
 page always uses this, only `find --target` overrides it),
 `search.areas` (the districts in the Area dropdown), `search.presets` (saved
 places: name -> `{lat, lng}`, the dropdown's **Preset** group and usable as
-`--place` / `--preset`), `report.dir`, `raw.dir`. There are
+`--place` / `--preset`), `report.dir`, `raw.dir`, `state.dir` (the durable
+`/status` counters and recent-search cache, resumed across restarts). There are
 **no user secrets** — see below.
 
 ## How the API is called
