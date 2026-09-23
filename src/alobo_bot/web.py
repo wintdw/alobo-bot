@@ -23,7 +23,6 @@ import collections
 import datetime as dt
 import pathlib
 import time
-import traceback
 from contextlib import asynccontextmanager
 from typing import Any
 
@@ -31,19 +30,12 @@ from . import __version__
 from .api import AloboClient, ApiError
 from .config import load_config, validate
 from .metrics import Metrics
+from .parsing import parse_dt
 from .pricing import ClockError, parse_clock
 from .report import render_markdown, write_report
 from .search import build_query, find_cheapest, presets_config
 from .state import read_json, write_json
 from .webui import render_page, render_results_region, render_status
-
-
-def _parse_moment(value: object) -> dt.datetime | None:
-    """A stored ISO timestamp, or None when the value is missing or malformed."""
-    try:
-        return dt.datetime.fromisoformat(str(value))
-    except (TypeError, ValueError):
-        return None
 
 
 def latest_report_file(report_dir: pathlib.Path, suffix: str) -> pathlib.Path | None:
@@ -106,6 +98,20 @@ def request_client_ip(request: Any) -> str:
             return first
     client = getattr(request, "client", None)
     return getattr(client, "host", None) or "unknown"
+
+
+# The failures a search can raise, and the message/status each maps to. Kept in one
+# place so ``/``, ``/results`` and ``/find`` cannot drift apart.
+SEARCH_FAILURES = (ClockError, ValueError, ApiError, RuntimeError)
+
+
+def search_error(exc: Exception) -> tuple[str, int]:
+    """Map a search failure to the (message, HTTP status) the routes answer with."""
+    if isinstance(exc, ApiError):
+        return f"could not reach the API: {exc}", 502
+    if isinstance(exc, RuntimeError):  # the single-flight "a search is already running"
+        return str(exc), 409
+    return str(exc), 400  # ClockError / ValueError: a bad request
 
 
 # How long a cached run stays reusable, and how many distinct searches are kept.
@@ -225,7 +231,7 @@ class ResultCache:
                 continue
             key = item.get("key")
             fragment = item.get("fragment")
-            at = _parse_moment(item.get("at"))
+            at = parse_dt(item.get("at"))
             if not isinstance(key, list) or not isinstance(fragment, str) or at is None:
                 continue
             if (now - at).total_seconds() > self._max_age:
@@ -397,12 +403,9 @@ def create_app() -> Any:
         metrics.record_cache_miss()
         try:
             result = await _search(raw)
-        except (ClockError, ValueError) as exc:
-            return _render(raw_query=raw, error=str(exc), status=400)
-        except ApiError as exc:
-            return _render(raw_query=raw, error=f"could not reach the API: {exc}", status=502)
-        except RuntimeError as exc:
-            return _render(raw_query=raw, error=str(exc), status=409)
+        except SEARCH_FAILURES as exc:
+            message, status = search_error(exc)
+            return _render(raw_query=raw, error=message, status=status)
         return _render(raw_query=raw, result=result)
 
     @app.get("/results", response_class=HTMLResponse)
@@ -418,14 +421,9 @@ def create_app() -> Any:
             return HTMLResponse(render_results_region())
         try:
             result = await _search(raw)
-        except (ClockError, ValueError) as exc:
-            return HTMLResponse(render_results_region(error=str(exc)), status_code=400)
-        except ApiError as exc:
-            return HTMLResponse(
-                render_results_region(error=f"could not reach the API: {exc}"), status_code=502
-            )
-        except RuntimeError as exc:  # the single-flight "a search is already running" case
-            return HTMLResponse(render_results_region(error=str(exc)), status_code=409)
+        except SEARCH_FAILURES as exc:
+            message, status = search_error(exc)
+            return HTMLResponse(render_results_region(error=message), status_code=status)
         return HTMLResponse(render_results_region(result=result))
 
     @app.post("/find", response_class=PlainTextResponse)
@@ -433,12 +431,9 @@ def create_app() -> Any:
         """Machine-readable variant of the same search (markdown body)."""
         try:
             result = await _search(raw)
-        except (ClockError, ValueError) as exc:
-            return PlainTextResponse(f"invalid request: {exc}", status_code=400)
-        except ApiError as exc:
-            return PlainTextResponse(f"find failed: {exc}", status_code=502)
-        except RuntimeError as exc:
-            return PlainTextResponse(str(exc), status_code=409)
+        except SEARCH_FAILURES as exc:
+            message, status = search_error(exc)
+            return PlainTextResponse(message, status_code=status)
         return PlainTextResponse(render_markdown(result))
 
     @app.get("/report.json")

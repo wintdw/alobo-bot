@@ -13,10 +13,11 @@ import html
 import json
 import urllib.parse
 
-from .report import area_label, hours_label, money
 from .availability import label as availability_label
 from .metrics import Snapshot, status_class
-from .pricing import ClockError, parse_clock
+from .parsing import MINUTES_PER_DAY, hhmm
+from .pricing import ClockError, parse_clock, window_bounds
+from .report import area_label, hours_label, money
 from .search import FindResult
 
 MONTHS = "01 02 03 04 05 06 07 08 09 10 11 12".split()
@@ -407,8 +408,8 @@ def time_value(text: object, fallback: str) -> str:
         minute = parse_clock(str(text))
     except ClockError:
         return fallback
-    minute = min(minute, 24 * 60 - 1)
-    return f"{minute // 60:02d}:{minute % 60:02d}"
+    minute = min(minute, MINUTES_PER_DAY - 1)
+    return hhmm(minute)
 
 
 def select_field(
@@ -712,10 +713,7 @@ def render_social(result: FindResult) -> str:
 def render_results(result: FindResult) -> str:
     query = result.query
     area = area_label(query)
-    start = f"{query.start_minute // 60:02d}:{query.start_minute % 60:02d}"
-    end = f"{query.end_minute // 60:02d}:{query.end_minute % 60:02d}"
-    from .pricing import window_bounds  # local import keeps module import cycle-free
-
+    start = hhmm(query.start_minute)
     start_dt, end_dt = window_bounds(query.day, query.start_minute, query.end_minute)
     end_label = f"{end_dt:%H:%M}" if start_dt.date() == end_dt.date() else f"{end_dt:%d/%m %H:%M}"
     # Tickets lead: they are the cheapest way onto a court, and the category the

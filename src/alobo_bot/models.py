@@ -5,7 +5,7 @@ from __future__ import annotations
 import datetime as dt
 from dataclasses import dataclass, field
 
-MINUTES_PER_DAY = 24 * 60
+from .parsing import MINUTES_PER_DAY, as_float, as_int, hhmm, parse_dt
 
 # The public booking site. Branch links only resolve under ``/san/`` (see
 # :attr:`Branch.booking_url`), and both the court and ticket rows use it so a
@@ -96,9 +96,9 @@ class Branch:
             ward_id=data.get("wardId") or data.get("ward_id"),
             phone=data.get("phone") or "",
             booking_types=list(data.get("bookingTypes") or []),
-            open_hour=_number(data.get("morningStartWorkingTime")),
-            close_hour=_number(data.get("afternoonEndWorkingTime")),
-            status=_integer(data.get("status")),
+            open_hour=as_float(data.get("morningStartWorkingTime")),
+            close_hour=as_float(data.get("afternoonEndWorkingTime")),
+            status=as_int(data.get("status")),
         )
 
 
@@ -144,15 +144,15 @@ class SpecialPrice:
 
     @property
     def label(self) -> str:
-        return f"{_hhmm(self.start_minute)}-{_hhmm(self.end_minute)}"
+        return f"{hhmm(self.start_minute % MINUTES_PER_DAY)}-{hhmm(self.end_minute % MINUTES_PER_DAY)}"
 
     def contains(self, start_minute: int, weekday: int) -> bool:
         """True when this window covers *start_minute* on *weekday* (1=Mon)."""
         if not _weekday_matches(self.date_range_week, weekday):
             return False
         minute = start_minute
-        if minute < self.start_minute and self.end_minute > 24 * 60:
-            minute += 24 * 60  # a window that wrapped midnight (e.g. 22:00-02:00)
+        if minute < self.start_minute and self.end_minute > MINUTES_PER_DAY:
+            minute += MINUTES_PER_DAY  # a window that wrapped midnight (e.g. 22:00-02:00)
         return self.start_minute <= minute < self.end_minute
 
     @classmethod
@@ -345,7 +345,7 @@ class SocialSession:
     @classmethod
     def from_api(cls, data: dict) -> "SocialSession":
         services = data.get("services") or []
-        start = _parse_dt(services[0].get("startTime")) if services else _parse_dt(data.get("time"))
+        start = parse_dt(services[0].get("startTime")) if services else parse_dt(data.get("time"))
         sport = data.get("sportType")
         return cls(
             id=data.get("id") or "",
@@ -395,7 +395,7 @@ class Booking:
     def from_api(cls, data: dict) -> list["Booking"]:
         """One :class:`Booking` per court named in the payload's ``services``."""
         booking_id = data.get("id") or ""
-        fallback_start = _parse_dt(data.get("time"))
+        fallback_start = parse_dt(data.get("time"))
         fallback_duration = int(data.get("duration") or 0)
         legs: list[Booking] = []
         for service in data.get("services") or []:
@@ -406,7 +406,7 @@ class Booking:
                 cls(
                     id=booking_id,
                     core_id=core_id,
-                    start=_parse_dt(service.get("startTime")) or fallback_start,
+                    start=parse_dt(service.get("startTime")) or fallback_start,
                     duration_min=int(service.get("duration") or fallback_duration),
                 )
             )
@@ -449,22 +449,6 @@ class CourtOption:
         return self.branch.booking_url
 
 
-def _number(value: object) -> float | None:
-    """A JSON number (or numeric string) as a float; None when absent or unusable."""
-    if value is None or value == "":
-        return None
-    try:
-        return float(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return None
-
-
-def _integer(value: object) -> int | None:
-    """A JSON number as an int; None when absent or unusable."""
-    number = _number(value)
-    return int(number) if number is not None else None
-
-
 def _parse_window(text: str) -> tuple[int, int] | None:
     """Parse "5:30-10:00" / "17:00-24:00" into (start_minute, end_minute)."""
     if "-" not in text:
@@ -475,7 +459,7 @@ def _parse_window(text: str) -> tuple[int, int] | None:
     if start is None or end is None:
         return None
     if end < start:  # window wraps past midnight (e.g. 22:00-02:00)
-        end += 24 * 60
+        end += MINUTES_PER_DAY
     return start, end
 
 
@@ -490,20 +474,6 @@ def _to_minute(text: str) -> int | None:
     except ValueError:
         return None
     return hour * 60 + minute
-
-
-def _hhmm(minute: int) -> str:
-    minute %= 24 * 60
-    return f"{minute // 60:02d}:{minute % 60:02d}"
-
-
-def _parse_dt(text: str | None) -> dt.datetime | None:
-    if not text:
-        return None
-    try:
-        return dt.datetime.fromisoformat(text.replace("Z", "+00:00"))
-    except ValueError:
-        return None
 
 
 def _weekday_matches(date_range_week: str, weekday: int) -> bool:

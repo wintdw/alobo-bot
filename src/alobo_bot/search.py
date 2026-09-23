@@ -52,8 +52,8 @@ from .models import (
     PriceTarget,
     SocialSession,
 )
+from .parsing import MINUTES_PER_DAY
 from .pricing import (
-    MINUTES_PER_DAY,
     clip_to_hours,
     haversine_km,
     hours_between,

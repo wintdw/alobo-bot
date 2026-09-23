@@ -21,8 +21,7 @@ from __future__ import annotations
 import datetime as dt
 
 from .models import CoreType, PriceTable
-
-MINUTES_PER_DAY = 24 * 60
+from .parsing import MINUTES_PER_DAY
 
 
 class ClockError(ValueError):

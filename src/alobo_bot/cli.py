@@ -134,9 +134,9 @@ def _cmd_sports(args: argparse.Namespace) -> int:
 
 
 def _cmd_serve(args: argparse.Namespace) -> int:
-    from .web import create_app
-
     import uvicorn
+
+    from .web import create_app
 
     app = create_app()
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")

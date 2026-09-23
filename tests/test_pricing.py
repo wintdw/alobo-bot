@@ -2,8 +2,15 @@ import datetime as dt
 
 import pytest
 
-from alobo_bot.pricing import ClockError, haversine_km, hours_between, parse_clock, window_bounds, window_cost
 from alobo_bot.models import CoreType, SpecialPrice
+from alobo_bot.pricing import (
+    ClockError,
+    haversine_km,
+    hours_between,
+    parse_clock,
+    window_bounds,
+    window_cost,
+)
 
 
 def make_type(normal=100000.0, specials=None):

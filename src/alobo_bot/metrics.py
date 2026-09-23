@@ -23,6 +23,7 @@ import threading
 import time
 from dataclasses import dataclass
 
+from .parsing import as_float, as_int, parse_dt
 from .state import read_json, write_json
 
 CLIENT_CAPACITY = 500          # distinct client addresses remembered for the table
@@ -35,24 +36,18 @@ def status_class(status: int) -> str:
 
 
 def _int(value: object) -> int:
-    try:
-        return int(value)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return 0
+    """A stored count as an int, defaulting to 0 when absent or unusable."""
+    return as_int(value) or 0
 
 
 def _non_negative_float(value: object) -> float:
-    try:
-        return max(float(value), 0.0)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        return 0.0
+    """A stored duration as a float clamped at 0 (0.0 when unusable)."""
+    return max(as_float(value) or 0.0, 0.0)
 
 
 def _moment(value: object, fallback: dt.datetime) -> dt.datetime:
-    try:
-        return dt.datetime.fromisoformat(str(value))
-    except (TypeError, ValueError):
-        return fallback
+    """A stored ISO timestamp, or *fallback* when it is missing or malformed."""
+    return parse_dt(value) or fallback
 
 
 def _counts(value: object, key=str) -> dict:

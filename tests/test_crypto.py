@@ -7,7 +7,6 @@ import pytest
 
 from alobo_bot.crypto import decrypt_body, encrypt_body, signature
 
-
 APP_KEY = "935b1fccd4bc45a12af095bf0bafa723"
 
 

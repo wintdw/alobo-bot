@@ -1,7 +1,15 @@
 import datetime as dt
 
-from alobo_bot.models import (Booking, Branch, Core, CoreType, CourtOption, PriceTarget,
-                              SocialSession, SpecialPrice)
+from alobo_bot.models import (
+    Booking,
+    Branch,
+    Core,
+    CoreType,
+    CourtOption,
+    PriceTarget,
+    SocialSession,
+    SpecialPrice,
+)
 from alobo_bot.pricing import clip_to_hours, window_cost
 
 

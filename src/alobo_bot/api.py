@@ -21,7 +21,7 @@ from typing import Any
 
 from . import __version__
 from .crypto import decrypt_body, encrypt_body, signature
-from .models import Booking, Branch, Core, CoreType, SocialSession, SportType, _parse_dt  # noqa: F401
+from .models import Booking, Branch, Core, CoreType, SocialSession, SportType
 
 
 class ApiError(RuntimeError):

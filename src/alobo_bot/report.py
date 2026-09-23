@@ -7,9 +7,10 @@ import json
 import pathlib
 from typing import Any
 
-from .search import FindQuery, FindResult
-from .pricing import window_bounds
 from .availability import label as availability_label
+from .parsing import hhmm
+from .pricing import window_bounds
+from .search import FindQuery, FindResult
 
 
 def money(value: float) -> str:
@@ -55,8 +56,8 @@ def to_dict(result: FindResult) -> dict[str, Any]:
         "longitude": query.longitude,
         "radiusKm": query.radius_km,
         "date": query.day.isoformat(),
-        "from": f"{query.start_minute // 60:02d}:{query.start_minute % 60:02d}",
-        "to": f"{query.end_minute // 60:02d}:{query.end_minute % 60:02d}",
+        "from": hhmm(query.start_minute),
+        "to": hhmm(query.end_minute),
         "branchesScanned": result.branches_scanned,
         "options": [
             {
