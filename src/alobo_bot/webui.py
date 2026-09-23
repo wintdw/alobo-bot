@@ -801,15 +801,11 @@ def render_page(
     <nav class="footer-block" aria-labelledby="footer-links-title">
       <h2 class="footer-title" id="footer-links-title">Quick links</h2>
       <ul class="footer-links">
-        <li><a href="/report.json">Latest report (JSON)</a></li>
-        <li><a href="/health">Service status</a></li>
-        <li><a href="?place=H%C3%A0%20N%E1%BB%99i&amp;from=18:00&amp;to=21:00">Example search: Hà Nội, 18:00–21:00</a></li>
+        <li><a href="/status">Service status</a></li>
       </ul>
     </nav>
   </div>
-  <p class="footer-fineprint">Prices come from the tariff each branch publishes for a
-     one-time rental and, for tickets, the listed price per person. Source: AloBooking's
-     public API (datlich.alobo.vn).</p>
+  <p class="footer-fineprint">A product of Atento.</p>
 </footer>
 <script>{SCRIPT}</script>
 </body>

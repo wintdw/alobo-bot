@@ -26,7 +26,7 @@ src/alobo_bot/
   webui.py       server-rendered HTML page (pure functions, no FastAPI)
   cli.py         `find`, `sports`, `serve`
   web.py         FastAPI wiring: GET / page, POST /find, /report.json,
-                 /health, /status (+ /status.json)
+                 /status (+ /status.json)
 tests/         pytest, pure logic only (no network)
 scripts/       recover_api_keys.py — decode the web app's obfuscated build keys
 docs/          reverse-engineering notes: updating-api-keys.md,
@@ -72,8 +72,8 @@ docs/          reverse-engineering notes: updating-api-keys.md,
 - **Durable state lives on the host.** The `/status` counters (`metrics.py`) and
   the result cache (`web.py`) are written under `state.dir` (`data/state/`) and
   read back at start, so a restart resumes instead of resetting — keep that dir on
-  the same bind mount as `data/`. `/status` is a monitoring view and is
-  deliberately **not linked** from the public page.
+  the same bind mount as `data/`. `/status` is the service/health view (linked
+  from the footer as "Service status").
 
 ## Keeping up with the app (API keys)
 

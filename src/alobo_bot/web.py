@@ -472,19 +472,4 @@ def create_app() -> Any:
             **metrics.snapshot().to_dict(),
         })
 
-    @app.get("/health")
-    def health() -> JSONResponse:
-        snapshot = metrics.snapshot(clients=0)
-        return JSONResponse(
-            {
-                "status": "ok",
-                "busy": snapshot.busy,
-                "last_run": (
-                    snapshot.last_run.isoformat(timespec="seconds") if snapshot.last_run else None
-                ),
-                "last_error": snapshot.last_error,
-                "sport": cfg["search"]["sport"],
-            }
-        )
-
     return app

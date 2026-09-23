@@ -367,12 +367,10 @@ def test_footer_explains_the_data_and_the_no_booking_rule():
     page = render_page(sports=SPORTS, areas=AREAS, query={})
     footer = page.split("<footer>", 1)[1].split("</footer>", 1)[0]
     assert "never books and never pays" in footer
-    assert "datlich.alobo.vn" in footer
-    assert "tariff each branch publishes" in footer
+    assert "A product of Atento" in footer
     # the service links are grouped under a labelled heading, not a run-on line
     assert 'aria-labelledby="footer-links-title"' in footer
-    assert '<a href="/report.json">Latest report (JSON)</a>' in footer
-    assert '<a href="/health">Service status</a>' in footer
+    assert '<a href="/status">Service status</a>' in footer
 
 
 def test_empty_state_names_the_action():
@@ -676,9 +674,9 @@ def test_status_page_reports_the_vital_metrics():
     assert '<a href="/status.json">/status.json</a>' in page
 
 
-def test_status_page_is_not_linked_from_the_search_page():
+def test_status_page_is_linked_from_the_search_page():
     page = render_page(sports=SPORTS, areas=AREAS, query={})
-    assert "/status" not in page
+    assert 'href="/status"' in page
 
 
 def test_status_page_shows_traffic_clients_and_errors():

@@ -203,8 +203,7 @@ place, explicit), `--lat/--lng/--radius`, `--date YYYY-MM-DD`, `--from HH:MM`,
 | GET | `/results` | results-only HTML fragment, same query params as `/` (the page's fetch target) |
 | POST | `/find` | same search, markdown response (for scripts) |
 | GET | `/report.json` | JSON snapshot of the last run |
-| GET | `/health` | service state (busy, last run, last error) |
-| GET | `/status` | monitoring page: traffic, clients, searches and reports (not linked from the page) |
+| GET | `/status` | service state and monitoring page: busy, last run, last error, traffic, clients, searches and reports |
 | GET | `/status.json` | the same counters as JSON, for scraping or alerting |
 
 ```bash
@@ -214,8 +213,8 @@ curl -X POST 'localhost:8085/find?place=H%C3%A0%20N%E1%BB%99i&from=18:00&to=21:0
 ### Monitoring
 
 `GET /status` is a plain server-rendered page for watching the service — it is
-deliberately **not linked from the public search page**, so reach it directly.
-It shows what a human needs at a glance: uptime, request totals by path and
+linked from the footer as **Service status**. It shows what a human needs at a
+glance: whether a search is running, uptime, request totals by path and
 status code, error rate and latency, the number of distinct clients (with the
 most recently active ones), search counts (completed, failed, single-flight
 rejections), the result cache (entries held vs. capacity, its reuse window,
