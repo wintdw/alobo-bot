@@ -34,6 +34,9 @@ search:
     Mulberry:
       lat: 20.987175137028466
       lng: 105.784681195317
+    ICON4:
+      lat: 21.028244539123666
+      lng: 105.8043374223036
   max_branches: 25          # cap on branches enriched with courts/prices per run
   workers: 6                # branches priced in parallel (each needs 3 API calls)
   # Which categories a run reports; courts by most hours then cheapest rate,

@@ -1,13 +1,27 @@
+# Runtime state, local environments and tooling — never part of the build context.
 data/
-.git/
 .venv/
 venv/
-__pycache__/
-*.py[cod]
-*.egg-info/
+.env
+.commandcode/
+
+# Python junk at any depth (`*` does not cross `/`, so a plain `*.pyc` misses
+# src/alobo_bot/*.pyc and would copy it into the build context).
+**/__pycache__/
+**/*.py[cod]
+**/*.egg-info/
 build/
 dist/
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
-.env
+
+# Not read by the Dockerfile (it copies pyproject.toml, README.md, src/, config.yaml).
+.git/
+.gitignore
+tests/
+docs/
+scripts/
+AGENTS.md
+Dockerfile
+docker-compose.yml

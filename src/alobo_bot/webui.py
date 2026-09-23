@@ -3,7 +3,7 @@
 Kept separate from :mod:`web` so the markup stays pure and testable without
 FastAPI installed. Everything is a plain function returning an HTML fragment, so
 the page works with JavaScript disabled; a few lines of progressive enhancement
-only add a "searching…" state to the form.
+let the form fetch the results into the page instead of reloading it.
 """
 
 from __future__ import annotations
@@ -123,8 +123,8 @@ button:disabled { opacity:.55; cursor:progress; }
 .presets .range { margin-inline-start:.4rem; font-weight:500; opacity:.75; }
 .actions { display:flex; flex-wrap:wrap; align-items:center; gap:.6rem;
   margin-block-start:1.3rem; padding-block-start:1.2rem; border-block-start:1px solid var(--line); }
-.geo-status { margin:.5rem 0 0; }
-.geo-status:empty { display:none; }
+.geo-status, .search-status { margin:.5rem 0 0; }
+.geo-status:empty, .search-status:empty { display:none; }
 .table-wrap { overflow-x:auto; border:1px solid var(--line); border-radius:var(--radius);
   background:var(--card); }
 table { border-collapse:collapse; inline-size:100%; font-size:.9rem; }
@@ -161,14 +161,58 @@ footer { color:var(--muted); font-size:.8rem; padding-block:2.5rem 3rem;
 """.strip()
 
 SCRIPT = """
-addEventListener('submit', (e) => {
-  const form = e.target;
-  const btn = form.querySelector('button[type=submit]');
-  if (!btn) return;
-  btn.disabled = true;
-  btn.textContent = 'Searching…';
-  form.setAttribute('aria-busy', 'true');
-});
+// Progressive enhancement: the search itself. The form is a plain GET, so
+// without this script Find reloads the page and the browser sits blank for the
+// whole multi-second API fan-out. When fetch exists, the submit is intercepted
+// and the results fragment is fetched into #results instead — the form stays put,
+// a status line reports progress, and the URL is updated so the search is still
+// shareable and the Back button re-runs it.
+const searchForm = document.querySelector('main form');
+const resultsRegion = document.getElementById('results');
+const searchStatus = document.getElementById('search-status');
+const findButton = searchForm && searchForm.querySelector('button[type=submit]');
+let inFlight = null;
+
+function setSearchBusy(on) {
+  if (findButton) {
+    findButton.disabled = on;
+    findButton.textContent = on ? 'Searching…' : 'Find';
+  }
+  if (resultsRegion) resultsRegion.setAttribute('aria-busy', on ? 'true' : 'false');
+  if (searchStatus) searchStatus.textContent = on ? 'Searching AloBooking…' : '';
+}
+
+async function runSearch(params) {
+  if (inFlight) inFlight.abort();
+  inFlight = new AbortController();
+  setSearchBusy(true);
+  try {
+    const response = await fetch('/results?' + params.toString(), {signal: inFlight.signal});
+    // The body is a server-rendered fragment either way — the tables on success,
+    // an escaped error paragraph on 400/409/502 — so it is always swapped in.
+    resultsRegion.innerHTML = await response.text();
+  } catch (err) {
+    if (err.name === 'AbortError') return;
+    resultsRegion.innerHTML =
+      '<p class="error" role="alert">Error: could not reach the service. Please try again.</p>';
+  } finally {
+    setSearchBusy(false);
+  }
+}
+
+if (searchForm && resultsRegion && window.fetch && window.history.pushState) {
+  searchForm.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const params = new URLSearchParams(new FormData(searchForm));
+    history.pushState(null, '', '/?' + params.toString());
+    runSearch(params);
+  });
+  addEventListener('popstate', () => {
+    // Re-run whatever the new URL asks for; with no parameters the endpoint
+    // returns the idle prompt, so Back to the blank form clears the results too.
+    runSearch(new URLSearchParams(location.search));
+  });
+}
 
 // Progressive enhancement: the geolocation button stays hidden unless the
 // browser supports it, so without JS the form is unchanged (pick an area or type
@@ -529,6 +573,7 @@ def render_form(query: dict, sports: list[tuple[str, str]], areas: list[str],
     <button type="submit" class="btn-primary">Find</button>
     <button type="button" class="btn-secondary" id="geo" hidden>Use current location</button>
   </div>
+  <p class="hint search-status" id="search-status" role="status" aria-live="polite"></p>
   <p class="hint geo-status" id="geo-status" aria-live="polite"></p>
 </form>{saved_json}"""
 
@@ -671,6 +716,26 @@ def render_results(result: FindResult) -> str:
 </section>"""
 
 
+EMPTY_RESULT_HTML = (
+    '<p class="empty">Choose an area or your current location, set a date and time '
+    'window, then press Find to compare court and ticket prices.</p>'
+)
+
+
+def render_results_region(result: FindResult | None = None, error: str | None = None) -> str:
+    """The swappable results area: the results, an error, or the idle prompt.
+
+    Kept a pure function so the fetch enhancement's endpoint (:mod:`web`) returns
+    exactly the markup the full page embeds in its ``#results`` container — the
+    two renders can never drift.
+    """
+    if error:
+        return f'<p class="error" role="alert">Error: {esc(error)}</p>'
+    if result is not None:
+        return render_results(result)
+    return EMPTY_RESULT_HTML
+
+
 def render_page(
     *,
     sports: list[tuple[str, str]],
@@ -681,13 +746,6 @@ def render_page(
     error: str | None = None,
 ) -> str:
     """The whole page: header, search form, then results (or an error)."""
-    body = []
-    if error:
-        body.append(f'<p class="error" role="alert">Error: {esc(error)}</p>')
-    if result is not None:
-        body.append(render_results(result))
-    elif not error:
-        body.append('<p class="empty">Choose an area or your current location, set a date and time window, then press Find to compare court and ticket prices.</p>')
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -707,7 +765,7 @@ def render_page(
 <main id="content" tabindex="-1">
   <h2>Search criteria</h2>
   {render_form(query or {}, sports, areas, presets)}
-  {''.join(body)}
+  <div id="results" aria-live="polite" aria-busy="false">{render_results_region(result, error)}</div>
 </main>
 <footer>
   <div class="footer-grid">

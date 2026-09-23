@@ -64,9 +64,22 @@ availability. Courts are ranked by the hours they can sell and then by the hourl
 rate (not the total); tickets by distance, then price, then the session covering
 most of the requested window. Each row carries the winning highlight, the hours,
 per-hour price, distance and a link to the venue on AloBooking.
-Searches run in a
+Pressing **Find** does not reload the page: with JavaScript the form is
+intercepted, a "Searching AloBooking…" status appears, and the results are
+fetched into the page as a fragment — the form and your picks stay put. The URL
+still gains the query string (so the search stays bookmarkable and the Back
+button re-runs it). Without JavaScript the plain `GET /` form submits and the
+server renders the whole page, exactly as before. Searches run in a
 worker thread and are single-flighted; several branches are priced in parallel,
 so a typical area returns in a few seconds.
+
+Because the whole search lives in the URL, a refresh would otherwise repeat that
+fan-out every time. Instead the server caches each run's result and **revisiting
+the same criteria re-renders it** — no API calls — so F5, or returning to a
+bookmarked search you ran a moment ago, is instant; **Find** still fetches fresh.
+The cache is bounded and time-limited (`RESULT_CACHE_MAX` searches,
+`RESULT_REUSE_SECONDS` in `web.py`, 32 and 15 minutes), so a run past the window
+searches again rather than presenting stale prices as current.
 
 ## What it does
 
@@ -187,6 +200,7 @@ place, explicit), `--lat/--lng/--radius`, `--date YYYY-MM-DD`, `--from HH:MM`,
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/` | the search page; add query params to run a search |
+| GET | `/results` | results-only HTML fragment, same query params as `/` (the page's fetch target) |
 | POST | `/find` | same search, markdown response (for scripts) |
 | GET | `/report.json` | JSON snapshot of the last run |
 | GET | `/health` | service state (busy, last run, last error) |

@@ -2,8 +2,20 @@ import datetime as dt
 
 from alobo_bot.models import Branch, Core, CoreType, CourtOption, SocialSession
 from alobo_bot.search import BranchResult, FindQuery, FindResult
-from alobo_bot.web import has_search_params
-from alobo_bot.webui import esc, render_courts, render_page, render_results, render_social
+from alobo_bot.web import (
+    RESULT_REUSE_SECONDS,
+    ResultCache,
+    has_search_params,
+    query_key,
+)
+from alobo_bot.webui import (
+    esc,
+    render_courts,
+    render_page,
+    render_results,
+    render_results_region,
+    render_social,
+)
 
 SPORTS = [("pickleball", "Pickleball"), ("badminton", "Cầu lông")]
 AREAS = ["Hà Nội", "Cầu Giấy, Hà Nội"]
@@ -52,6 +64,73 @@ def test_has_search_params():
     assert has_search_params(place="Hà Nội", lat=None, lng=None)
     assert has_search_params(place=None, lat=21.0, lng=None)
     assert not has_search_params(place="", lat=None, lng=None)
+
+
+SEARCH = {"place": "Mulberry", "lat": 20.987175137028466, "lng": 105.784681195317,
+          "radius": 3.0, "date": "2026-09-23", "from": "18:00", "to": "23:59",
+          "sport": "pickleball", "limit": None, "category": "all", "availability": "any"}
+
+
+def test_query_key_matches_a_reload_to_the_search_that_rendered_the_page():
+    assert query_key(dict(SEARCH)) == query_key(dict(SEARCH))
+    # whitespace around a name is noise; a different field is a different search
+    assert query_key({**SEARCH, "place": "  Mulberry "}) == query_key(SEARCH)
+    assert query_key({**SEARCH, "from": "19:00"}) != query_key(SEARCH)
+    assert query_key({**SEARCH, "category": "court"}) != query_key(SEARCH)
+
+
+def test_a_reload_reuses_the_cached_result_for_the_same_criteria():
+    cache = ResultCache()
+    now = dt.datetime(2026, 9, 23, 18, 30)
+    cache.put(query_key(SEARCH), "the run", now)
+
+    assert cache.get(query_key(SEARCH), now) == "the run"
+    assert cache.get(query_key({**SEARCH, "from": "19:00"}), now) is None  # not run yet
+
+
+def test_the_cache_keeps_each_search_so_a_revisit_is_instant():
+    cache = ResultCache()
+    now = dt.datetime(2026, 9, 23, 18, 30)
+    first, second = query_key(SEARCH), query_key({**SEARCH, "from": "19:00"})
+    cache.put(first, "the first run", now)
+    cache.put(second, "the second run", now)
+
+    # searching another window does not throw away the first one's result
+    assert cache.get(first, now) == "the first run"
+    assert cache.get(second, now) == "the second run"
+
+
+def test_a_cached_run_past_the_reuse_window_is_a_miss():
+    cache = ResultCache()
+    now = dt.datetime(2026, 9, 23, 18, 30)
+    cache.put(query_key(SEARCH), "the run", now - dt.timedelta(seconds=RESULT_REUSE_SECONDS + 1))
+    assert cache.get(query_key(SEARCH), now) is None
+
+
+def test_the_cache_is_bounded_and_drops_the_least_recently_used():
+    cache = ResultCache(max_entries=2)
+    now = dt.datetime(2026, 9, 23, 18, 30)
+    keys = [query_key({**SEARCH, "from": f"{hour:02d}:00"}) for hour in (6, 13, 18)]
+    for index, key in enumerate(keys):
+        cache.put(key, index, now)
+
+    assert cache.get(keys[0], now) is None          # evicted: the least recent
+    assert cache.get(keys[1], now) == 1
+    assert cache.get(keys[2], now) == 2
+
+
+def test_reading_a_cached_run_makes_it_the_most_recent():
+    cache = ResultCache(max_entries=2)
+    now = dt.datetime(2026, 9, 23, 18, 30)
+    keys = [query_key({**SEARCH, "from": f"{hour:02d}:00"}) for hour in (6, 13, 18)]
+    cache.put(keys[0], 0, now)
+    cache.put(keys[1], 1, now)
+    assert cache.get(keys[0], now) == 0              # now the most recently used
+    cache.put(keys[2], 2, now)                       # so this evicts keys[1], not keys[0]
+
+    assert cache.get(keys[0], now) == 0
+    assert cache.get(keys[1], now) is None
+    assert cache.get(keys[2], now) == 2
 
 
 def test_page_has_landmarks_and_accessible_form():
@@ -458,3 +537,53 @@ def test_court_rows_show_the_target_behind_the_price():
 def test_error_is_announced():
     page = render_page(sports=SPORTS, areas=AREAS, query={"place": "X"}, error="broke")
     assert 'role="alert"' in page and "broke" in page
+
+
+def test_results_region_is_the_one_swappable_fragment():
+    # the same fragment the full page embeds, so the two renders cannot drift
+    assert "press Find to compare court and ticket prices" in render_results_region()
+    assert "No priced courts in this window" not in render_results_region()
+
+    assert 'role="alert"' in render_results_region(error="broke")
+    assert "broke" in render_results_region(error="broke")
+
+    tables = render_results_region(result=result_with([option("a", "Alpha", 150000)]))
+    assert "150.000đ" in tables
+
+
+def test_the_page_embeds_the_results_in_a_live_swappable_region():
+    # a stable container is what the script's innerHTML swap targets
+    page = render_page(sports=SPORTS, areas=AREAS, query={})
+    assert '<div id="results" aria-live="polite" aria-busy="false">' in page
+    assert "press Find to compare court and ticket prices" in page
+
+    # an error renders inside that region, so the swap can replace it too
+    page = render_page(sports=SPORTS, areas=AREAS, query={"place": "X"}, error="broke")
+    region = page.split('id="results"', 1)[1]
+    assert 'role="alert"' in region and "broke" in region
+
+
+def test_the_page_shows_a_search_progress_line():
+    page = render_page(sports=SPORTS, areas=AREAS, query={})
+    assert 'id="search-status" role="status" aria-live="polite"' in page
+    # hidden while empty, like the geolocation status
+    assert ".geo-status:empty, .search-status:empty { display:none; }" in page
+
+
+def test_find_is_progressive_enhancement_over_a_plain_get_form():
+    page = render_page(sports=SPORTS, areas=AREAS, query={})
+    # without JavaScript the form still navigates to the server-rendered page
+    assert '<form method="get" action="/" class="card">' in page
+    # with it, the submit is intercepted and the fragment is fetched instead
+    assert "fetch('/results?'" in page
+    assert "new URLSearchParams(new FormData(searchForm))" in page
+    assert "preventDefault" in page
+    # the URL is still updated, so a search stays bookmarkable/shareable
+    assert "history.pushState(null, '', '/?'" in page
+    # and Back re-runs the previous search rather than showing a stale region
+    assert "addEventListener('popstate'" in page
+    # a superseded request is cancelled
+    assert "new AbortController()" in page
+    # the enhancement is gated on the APIs it needs, so an old browser navigates
+    assert "window.fetch && window.history.pushState" in page
+    assert 'id="results"' in page and "aria-busy" in page
