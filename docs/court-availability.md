@@ -51,7 +51,7 @@ from the window and reports what is left:
 
 | Open part of the window | Verdict | Shown as |
 |---|---|---|
-| all of it | `free` | `free` |
+| all of it | `free` | `available` |
 | some of it | `partial` | `partial 20:00-21:00` (the open spans) |
 | none of it | `booked` | _not listed at all_ |
 | unknown (lookup failed) | `unknown` | `?` |
@@ -100,6 +100,15 @@ while SELA, whose table stops at 22:00, is offered for 20:00-22:00 only.
 - **`status` was `1` on every live booking** and `type` was `groupOneTime`; a
   cancelled booking was never observed, so the bot treats every returned leg as
   occupying its court rather than second-guessing `status`.
+- **The branch list keeps withdrawn venues.** A branch whose `status` is `-1`
+  (locked — its name often says so, e.g. "789 Pickleball Club (đã khóa tạo cn
+  mới)" or "(khóa)Stamina …") or `-2` (removed) is still returned by both
+  `/v2/user/branch/branches` and `branches_first`, and its `get_cores` /
+  `get_core_types` / `get_onetime_bookings` calls answer normally — so a locked
+  venue prices up and looks free. The app drops exactly these two codes
+  (`main.dart.js`: `![-2,-1].contains(branch.status)`) before it lists anything;
+  the bot does the same (`models.Branch.is_locked`), because their courts and
+  tickets are no longer for sale. `status` `0` and `1` are live and are kept.
 - **Month-level schedules are separate.** The app also calls
   `get_schedule_bookings?branchId=&month=YYYY-MM`, which returned `[]` for every
   branch tried. It is not needed to answer "is this court free", so the bot

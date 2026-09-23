@@ -26,19 +26,30 @@ A live deployment runs at **https://alobo.atento.vn** — same page, nothing to
 install (this is the bot's own UI; the AloBooking API it queries is separate).
 
 The page is a plain HTML form (area, coordinates, date, from/to, sport,
-category, availability), with an English UI. The **Area** field is a dropdown of
-the
-configured areas — the Hà Nội districts in `search.areas` — while still
-accepting any typed area. The **Category** control picks what to report: both
+category, availability), with an English UI. The **Area** box is a dropdown with
+the saved places (`search.presets`, a name for a coordinate pair) leading it under
+**Preset**, then the configured districts of `search.areas` under **Area**, and an
+**Any area** entry that leaves the search to the coordinates you enter (or the
+configured default area). Picking a saved place fills the latitude/longitude boxes
+with its coordinates (so you can see or adjust them) and searches a radius around
+that spot; naming it in the CLI's `--place` does the same without the page. The
+**Category** control picks what to report: both
 categories (the default), tickets only, or courts only. The **Availability**
-control either tags every court free/booked for the window (the default) or
+control either tags every court available/booked for the window (the default) or
 hides the courts already taken, so every listed venue is bookable. The
+**From**/**To** boxes are native time pickers, and the **Morning** (06:00–12:00),
+**Afternoon** (13:00–18:00) and **Night** (18:00–24:00, filled as 23:59 since a time
+input cannot hold 24:00) buttons beneath them fill both with a standard window —
+like the location button they only fill the fields, so the window stays visible,
+editable and shareable in the URL before you press **Find**. The buttons need
+JavaScript; the pickers themselves do not. The
 **Use current location** button asks the browser for your coordinates,
-reverse-geocodes them (the free, key-less BigDataCloud client API) to fill the
-**Area** box with the nearest area name, and does not search until you press
+reverse-geocodes them (the free, key-less BigDataCloud client API) to set the
+**Area** dropdown to the nearest area name — adding it to the list when no district
+matches — and does not search until you press
 **Find**. The browser calls the geocoder directly; when it is
-unreachable or offline the coordinates are still filled and the area is left
-for you to type. The button is hidden when JavaScript or geolocation is
+unreachable or offline the coordinates are still filled and the area is left at
+**Any area**. The button is hidden when JavaScript or geolocation is
 unavailable; browsers only grant location on HTTPS or `localhost`.
 All state lives in the query string, so a search is just a URL you can bookmark
 or share:
@@ -50,8 +61,9 @@ http://localhost:8085/?place=Hà Nội&date=2026-09-25&from=18:00&to=21:00&categ
 Results render as two labelled categories, each priced in its own unit — one row
 per court, one per ticket, since courts in the same venue differ in hours and
 availability. Courts are ranked by the hours they can sell and then by the hourly
-rate (not the total); tickets by price. Each row carries the winning highlight,
-the hours, per-hour price, distance and a link to the venue on AloBooking.
+rate (not the total); tickets by distance, then price, then the session covering
+most of the requested window. Each row carries the winning highlight, the hours,
+per-hour price, distance and a link to the venue on AloBooking.
 Searches run in a
 worker thread and are single-flighted; several branches are priced in parallel,
 so a typical area returns in a few seconds.
@@ -63,20 +75,20 @@ $ alobo-bot find --place "Cầu Giấy, Hà Nội" --date 2026-09-25 --from 18:0
 Cheapest Pickleball — 25/09/2026 18:00-21:00
 Area: Cầu Giấy, Hà Nội · 6 branch(es) scanned
 
-Tickets (xé vé) — per person, cheapest first · 1 ticket(s)
+Tickets (xé vé) — per person, nearest then cheapest then longest in the window · 1 ticket(s)
   - 50.000đ · Social không giới hạn @ 19:00-21:00 · 6 spots · Sân Pickleball ABC
        Số 12 Trần Thái Tông, Cầu Giấy, Hà Nội
 
 Courts — per court, most hours then cheapest rate · 4 court(s)
   #  hours         price       /hour    dist  status               court · venue
-  1     3h      240.000đ     80.000đ   3.2km  free                 Sân 1 · Sân Pickleball ABC
-       Số 12 Trần Thái Tông, Cầu Giấy, Hà Nội · tariff: Khách hàng
-  2     3h      240.000đ     80.000đ   3.2km  free                 Sân 2 · Sân Pickleball ABC
-       Số 12 Trần Thái Tông, Cầu Giấy, Hà Nội · tariff: Khách hàng
-  3     3h      300.000đ    100.000đ   2.1km  free                 Sân 1 · Sân Pickleball DEF
-       Số 8 Dịch Vọng Hậu, Cầu Giấy, Hà Nội · tariff: Pickleball
+  1     3h      240.000đ     80.000đ   3.2km  available            Sân 1 · Sân Pickleball ABC
+       Số 12 Trần Thái Tông, Cầu Giấy, Hà Nội · target: Khách hàng
+  2     3h      240.000đ     80.000đ   3.2km  available            Sân 2 · Sân Pickleball ABC
+       Số 12 Trần Thái Tông, Cầu Giấy, Hà Nội · target: Khách hàng
+  3     3h      300.000đ    100.000đ   2.1km  available            Sân 1 · Sân Pickleball DEF
+       Số 8 Dịch Vọng Hậu, Cầu Giấy, Hà Nội · target: Pickleball
   4     1h       90.000đ     90.000đ   1.4km  partial 20:00-21:00  Sân 1 · Sân Pickleball XYZ
-       Ngõ 9 Dịch Vọng Hậu, Cầu Giấy, Hà Nội · tariff: Pickleball
+       Ngõ 9 Dịch Vọng Hậu, Cầu Giấy, Hà Nội · target: Pickleball
 ```
 
 Ranked by the hours a court can sell, then by the hourly rate — the one-hour slot
@@ -87,8 +99,13 @@ comes last despite having the second-cheapest rate and the smallest total.
   tickets first, since they are the cheapest way onto a court. `--category`
   (or the page's **Category** control) narrows the run to one of them; `all`
   does both.
+- **Withdrawn venues are left out.** The branch list keeps locked and removed
+  venues (`status` `-1`/`-2` — names like "789 Pickleball Club (đã khóa tạo cn
+  mới)" or "(khóa)Stamina …") so the app can still show them a "closed" page, but
+  their courts and tickets are no longer on sale. The bot drops them before
+  pricing, so every listed result is a venue you can actually book.
 - **Availability checked.** Each court is tagged from the branch's own booking
-  list — `free`, `partial` with the still-open spans (a court taken 18:00–20:00 of
+  list — `available`, `partial` with the still-open spans (a court taken 18:00–20:00 of
   an 18:00–21:00 search shows `partial 20:00-21:00`), or `?` when the list could
   not be read. A court taken for the *whole* window is left out entirely: it has
   nothing left to sell, so there is no price to quote.
@@ -123,7 +140,7 @@ comes last despite having the second-cheapest rate and the smallest total.
   — the app's "đối tượng áp dụng": the walk-up rate, a quarterly-payer discount,
   a monthly ticket, a ball machine. Every court is quoted at the branch's
   standard customer rate; `--target` (CLI only — the page has no control for it)
-  names another by id or name, and every row says which tariff it used.
+  names another by id or name, and every row says which target it used.
 - Output as text, JSON, or a saved markdown + JSON report.
 
 ## Install
@@ -159,7 +176,8 @@ alobo-bot find --place "Đà Nẵng" --json --out
 alobo-bot sports
 ```
 
-Flags: `--place`, `--lat/--lng/--radius`, `--date YYYY-MM-DD`, `--from HH:MM`,
+Flags: `--place` (an area or a saved place), `--preset NAME` (the same saved
+place, explicit), `--lat/--lng/--radius`, `--date YYYY-MM-DD`, `--from HH:MM`,
 `--to HH:MM`, `--sport`, `--category all|court|social`,
 `--availability any|free`, `--target ID|NAME`, `--limit`, `--json`, `--out`,
 `--config`.
@@ -187,7 +205,9 @@ Notable keys: `api.base_url` / `api.global_url`, `api.version`,
 for the whole window),
 `search.target` (the tariff to price under; blank = each type's standard one — the
 page always uses this, only `find --target` overrides it),
-`search.areas` (the Area dropdown list), `report.dir`, `raw.dir`. There are
+`search.areas` (the districts in the Area dropdown), `search.presets` (saved
+places: name -> `{lat, lng}`, the dropdown's **Preset** group and usable as
+`--place` / `--preset`), `report.dir`, `raw.dir`. There are
 **no user secrets** — see below.
 
 ## How the API is called
@@ -278,7 +298,8 @@ and is what the `free`/`booked`/`partial` status is read from; see
   so two rows with different `hours` are not directly comparable on total alone —
   which is why the courts table is ranked by hours available and then the hourly
   rate, with the total shown only for reference.
-- **Location is best-effort.** `--place` does a diacritic-insensitive text match
+- **Location is best-effort.** `--place` first checks the saved places, then does a
+  diacritic-insensitive text match
   on branch name + address; `--lat/--lng` uses a true distance filter. The search
   itself uses no geocoding service — the web page's **Use current location**
   button calls a third-party reverse geocoder (BigDataCloud) only to label the
@@ -292,8 +313,11 @@ and is what the `free`/`booked`/`partial` status is read from; see
   filtered: within a tariff the first matching time block wins.
 - **Tickets come from a coarser endpoint.** `get_filtered_branch_booking`
   ignores `dateStart`/`dateEnd`, `bookingType`, `types` and `branchIds`, and
-  returns every ticket event nationwide; the bot filters that down to the
-  shortlisted branches and to sessions that *start* inside the window. A session
+  returns every ticket event nationwide; the bot filters that down to the search
+  area, to tickets for the searched sport (each booking names its own
+  `sportType`) and to sessions that *start* inside the window. Each branch it
+  returns is a ticket candidate in its own right, so a venue is not dropped just
+  because the court shortlist's `max_branches` cap did not reach it. A session
   the API does not return is invisible to the bot, so tickets are reliable for
   near dates and thin for dates far out.
 

@@ -79,12 +79,78 @@ def test_category_control_lists_both_and_preserves_the_choice():
     assert '<option value="all" selected>' not in page
 
 
-def test_area_field_is_a_dropdown_that_still_accepts_free_text():
+def test_area_field_is_a_pick_only_dropdown():
     page = render_page(sports=SPORTS, areas=["Cầu Giấy, Hà Nội"], query={})
-    # a datalist gives the dropdown, while the input keeps name="place"
-    assert 'id="place" name="place"' in page and 'list="place-options"' in page
-    assert '<datalist id="place-options">' in page
-    assert '<option value="Cầu Giấy, Hà Nội"></option>' in page
+    # a real select, not a text box with a suggestion list
+    assert '<select id="place" name="place"' in page
+    assert '<input id="place"' not in page and 'datalist' not in page
+    assert '<optgroup label="Area">' in page
+    assert '<option value="Cầu Giấy, Hà Nội">Cầu Giấy, Hà Nội</option>' in page
+
+
+def test_the_area_dropdown_offers_a_blank_entry_and_keeps_the_searched_area():
+    page = render_page(sports=SPORTS, areas=["Cầu Giấy, Hà Nội"], query={})
+    # blank is a real choice: it means "no area", so a fresh form still searches nothing
+    assert '<option value="" selected>Any area</option>' in page
+
+    page = render_page(sports=SPORTS, areas=["Cầu Giấy, Hà Nội"],
+                       query={"place": "Cầu Giấy, Hà Nội"})
+    assert '<option value="Cầu Giấy, Hà Nội" selected>Cầu Giấy, Hà Nội</option>' in page
+    assert '<option value="" selected>' not in page
+
+
+def test_an_area_outside_the_list_is_still_offered_selected():
+    # a reverse-geocoded or bookmarked area is not in config, but must not be lost
+    page = render_page(sports=SPORTS, areas=AREAS, query={"place": "Sơn Tây, Hà Nội"})
+    assert '<option value="Sơn Tây, Hà Nội" selected>Sơn Tây, Hà Nội</option>' in page
+
+
+MULBERRY = {"Mulberry": (20.987175137028466, 105.784681195317)}
+
+
+def test_saved_places_lead_the_area_dropdown():
+    page = render_page(sports=SPORTS, areas=AREAS, presets=MULBERRY, query={})
+    # one picker, not a second control: the saved place is the dropdown's top group
+    assert '<optgroup label="Preset">' in page
+    assert '<option value="Mulberry">Mulberry</option>' in page
+    assert page.index('<optgroup label="Preset">') < page.index('<optgroup label="Area">')
+    assert 'name="preset"' not in page
+    assert "Saved places (Preset)" in page   # and the hint says what it does
+    # an ordinary area still needs no mention of saved places
+    assert "Saved places (Preset)" not in render_page(sports=SPORTS, areas=AREAS, query={})
+
+
+def test_choosing_a_saved_place_fills_its_coordinates():
+    page = render_page(sports=SPORTS, areas=AREAS, presets=MULBERRY, query={})
+    # the coordinates travel to the page so the boxes can be filled without a round trip
+    assert 'id="saved-places"' in page
+    assert '"Mulberry": [20.987175137028466, 105.784681195317]' in page
+    assert "applySavedPlace" in page
+    assert "getElementById('lat').value" in page
+    # and it reacts to picking a name from the dropdown
+    assert "areaSelect.addEventListener('change', applySavedPlace)" in page
+    # while coordinates the user typed themselves are never treated as ours to clear
+    assert "coordinatesFromSavedPlace = false" in page
+
+
+def test_no_saved_place_script_when_none_are_configured():
+    page = render_page(sports=SPORTS, areas=AREAS, query={})
+    assert 'id="saved-places"' not in page
+    assert '"Mulberry"' not in page
+
+
+def test_a_saved_place_cannot_break_out_of_the_script_element():
+    page = render_page(sports=SPORTS, areas=AREAS, query={},
+                       presets={"</script><b>": (1.0, 2.0)})
+    assert "</script><b>" not in page
+    assert "\\u003c/script>" in page
+
+
+def test_the_area_dropdown_keeps_a_searched_saved_place_selected():
+    page = render_page(sports=SPORTS, areas=AREAS, presets=MULBERRY,
+                       query={"place": "Mulberry"})
+    assert '<option value="Mulberry" selected>Mulberry</option>' in page
+    assert '<option value="" selected>' not in page
 
 
 def test_current_location_button_is_present_and_gated():
@@ -103,11 +169,13 @@ def test_current_location_fills_coords_without_auto_searching():
     assert 'press "Find"' in page
 
 
-def test_current_location_autofills_the_area_from_a_reverse_geocode():
+def test_current_location_selects_the_geocoded_area_in_the_dropdown():
     page = render_page(sports=SPORTS, areas=AREAS, query={})
-    # the coordinates are reverse-geocoded and the place name lands in the Area box
+    # the coordinates are reverse-geocoded and the name is selected in the Area dropdown
     assert "api.bigdatacloud.net/data/reverse-geocode-client" in page
-    assert "getElementById('place')" in page and "place.value = area" in page
+    assert "function selectArea" in page and "selectArea(area)" in page
+    # a name the list does not hold is added as an option, since a select drops it
+    assert "new Option(name, name, true, true)" in page
     # and it decides that name from locality + city ("Cầu Giấy, Hà Nội")
     assert "function areaFromGeocode" in page
     assert "data.locality" in page and "data.city" in page
@@ -126,6 +194,64 @@ def test_form_defaults_to_today_and_three_km():
     assert 'id="radius" name="radius" type="number" value="3"' in page
 
 
+def test_the_time_window_is_a_time_picker():
+    page = render_page(sports=SPORTS, areas=AREAS, query={})
+    # native time inputs, so the browser offers its own clock picker
+    assert '<input id="from" name="from" type="time" value="18:00">' in page
+    assert '<input id="to" name="to" type="time" value="21:00">' in page
+    # and the searched window comes back in the boxes
+    page = render_page(sports=SPORTS, areas=AREAS, query={"from": "06:30", "to": "09:00"})
+    assert '<input id="from" name="from" type="time" value="06:30">' in page
+    assert '<input id="to" name="to" type="time" value="09:00">' in page
+
+
+def test_the_time_picker_only_shows_values_it_can_hold():
+    # a time input blanks anything outside the day, and a blank field submits empty
+    page = render_page(sports=SPORTS, areas=AREAS, query={"from": "18:00", "to": "24:00"})
+    assert 'id="to" name="to" type="time" value="23:59"' in page
+    # an unparseable leftover falls back to the default rather than to a blank box
+    page = render_page(sports=SPORTS, areas=AREAS, query={"from": "sixish"})
+    assert 'id="from" name="from" type="time" value="18:00"' in page
+
+
+def test_the_quick_windows_are_offered_beside_the_pickers():
+    page = render_page(sports=SPORTS, areas=AREAS, query={})
+    # the three windows, each carrying the times it fills in
+    assert 'data-from="06:00" data-to="12:00"' in page
+    assert 'data-from="13:00" data-to="18:00"' in page
+    assert 'data-from="18:00" data-to="23:59"' in page
+    for name in ("Morning", "Afternoon", "Night"):
+        assert f"{name} <span" in page
+    # the range each button picks is on the button, so the choice is explicit
+    assert "06:00–12:00" in page and "13:00–18:00" in page and "18:00–24:00" in page
+    # and they sit with the time fields they fill
+    when = page[page.index("when-title"):page.index("what-title")]
+    assert 'id="window-presets"' in when and 'id="from"' in when and 'id="to"' in when
+    # secondary buttons next to the primary Find, not a second search
+    assert '<button type="submit" class="btn-primary">Find</button>' in page
+    assert 'class="presets"' in page
+
+
+def test_the_quick_windows_are_hidden_without_javascript():
+    page = render_page(sports=SPORTS, areas=AREAS, query={})
+    # without the script they would do nothing, so they stay hidden until it runs
+    assert 'id="window-presets" role="group" aria-label="Quick time windows" hidden' in page
+    assert "presetRow.hidden = false" in page
+    # the flex display must not beat the [hidden] attribute
+    assert ".presets[hidden] { display:none; }" in page
+
+
+def test_a_quick_window_fills_the_boxes_without_searching():
+    page = render_page(sports=SPORTS, areas=AREAS, query={})
+    assert "document.getElementById('from').value = preset.dataset.from" in page
+    assert "document.getElementById('to').value = preset.dataset.to" in page
+    # it only fills the fields: the user still presses Find, and sees the pick first
+    assert "requestSubmit" not in page
+    assert 'press "Find" to search' in page
+    # the fill is announced, since changing a field is silent to a screen reader
+    assert 'id="presets-hint" aria-live="polite"' in page
+
+
 def test_title_links_back_to_clean_form():
     page = render_page(sports=SPORTS, areas=AREAS, query={"place": "Hà Nội", "radius": "8"})
     assert '<h1><a href="/">' in page
@@ -134,9 +260,37 @@ def test_title_links_back_to_clean_form():
 
 def test_page_is_branded_with_the_logo_and_a_favicon():
     page = render_page(sports=SPORTS, areas=AREAS, query={})
-    assert "<title>Alobo | Cheapest pickleball courts</title>" in page
+    assert "<title>Alobo | Cheapest pickleball courts and tickets</title>" in page
     assert '<link rel="icon" href="data:image/svg+xml,' in page
     assert 'type="image/svg+xml"' in page
+
+
+def test_header_states_the_value_and_drops_the_read_only_blurb():
+    page = render_page(sports=SPORTS, areas=AREAS, query={})
+    header = page.split("<header>", 1)[1].split("</header>", 1)[0]
+    assert "cheapest pickleball courts and tickets" in header.lower()
+    assert "Public data" not in header
+    assert "read-only" not in header.lower()
+    # and the phrase is gone from the page as a whole, not just the header
+    assert "Public data" not in page
+    assert "read-only" not in page.lower()
+
+
+def test_footer_explains_the_data_and_the_no_booking_rule():
+    page = render_page(sports=SPORTS, areas=AREAS, query={})
+    footer = page.split("<footer>", 1)[1].split("</footer>", 1)[0]
+    assert "never books and never pays" in footer
+    assert "datlich.alobo.vn" in footer
+    assert "tariff each branch publishes" in footer
+    # the service links are grouped under a labelled heading, not a run-on line
+    assert 'aria-labelledby="footer-links-title"' in footer
+    assert '<a href="/report.json">Latest report (JSON)</a>' in footer
+    assert '<a href="/health">Service status</a>' in footer
+
+
+def test_empty_state_names_the_action():
+    page = render_page(sports=SPORTS, areas=AREAS, query={})
+    assert "press Find to compare court and ticket prices" in page
 
 
 def test_the_logo_follows_the_theme_and_is_decorative():
@@ -170,6 +324,16 @@ def test_results_table_is_semantic_and_ranked():
 def test_results_empty_state():
     page = render_results(result_with([]))
     assert "No priced courts in this window" in page
+
+
+def test_results_name_the_saved_place_that_was_searched():
+    result = result_with([option("a", "Alpha", 1000)])
+    result.query = FindQuery(place=None, preset="Mulberry", latitude=20.987175137028466,
+                             longitude=105.784681195317, day=dt.date(2026, 9, 25),
+                             start_minute=18 * 60, end_minute=21 * 60)
+    page = render_results(result)
+    assert "Mulberry" in page
+    assert "20.9872" not in page           # the name stands in for the raw coordinates
 
 
 def test_tickets_category_leads_and_is_labelled_per_person():
@@ -244,7 +408,7 @@ def test_court_rows_show_the_availability_status():
     page = render_courts(result_with([option("a", "Alpha", 1000, available="free"),
                                       option("b", "Beta", 2000, available="booked")]))
     assert 'scope="col">Status</th>' in page
-    assert '<td class="status status-free">free</td>' in page
+    assert '<td class="status status-free">available</td>' in page
     assert '<td class="status status-booked">booked</td>' in page
 
 
@@ -260,22 +424,22 @@ def test_a_partial_court_renders_its_free_span():
     assert '<td class="status status-partial">partial 20:00-21:00</td>' in page
 
 
-def test_the_page_offers_no_tariff_choice():
+def test_the_page_offers_no_target_choice():
     # Every court is priced at the branch's standard customer tariff; the page has no
     # control for it and ignores any `target` left over in a URL.
     page = render_page(sports=SPORTS, areas=AREAS, query={"place": "Hà Nội", "target": "kh"})
     assert 'name="target"' not in page
-    assert "Tariff" not in page.split("<footer>")[0]  # not a form control either
+    assert "Target" not in page.split("<footer>")[0]  # not a form control either
 
 
-def test_court_rows_show_the_tariff_behind_the_price():
+def test_court_rows_show_the_target_behind_the_price():
     tariffed = option("a", "Alpha", 1000, available="free")
     tariffed.target_name = "BẢNG GIÁ THUÊ SÂN"
     page = render_courts(result_with([tariffed, option("b", "Beta", 2000)]))
 
-    assert 'scope="col">Tariff</th>' in page
-    assert '<td class="tariff">BẢNG GIÁ THUÊ SÂN</td>' in page
-    assert '<td class="tariff">—</td>' in page  # no tariffs on Beta's court type
+    assert 'scope="col">Target</th>' in page
+    assert '<td class="target">BẢNG GIÁ THUÊ SÂN</td>' in page
+    assert '<td class="target">—</td>' in page  # no tariffs on Beta's court type
 
 
 def test_error_is_announced():

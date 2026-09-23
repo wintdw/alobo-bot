@@ -41,3 +41,21 @@ def test_validate_rejects_backwards_delay():
     cfg["api"]["delay_max_seconds"] = 1
     with pytest.raises(ValueError):
         validate(cfg)
+
+
+def test_validate_accepts_saved_places():
+    cfg = copy.deepcopy(DEFAULTS)
+    cfg["search"]["presets"] = {"Mulberry": {"lat": 20.987175137028466, "lng": 105.784681195317}}
+    validate(cfg)
+
+
+def test_validate_rejects_a_saved_place_without_numeric_coordinates():
+    cfg = copy.deepcopy(DEFAULTS)
+    cfg["search"]["presets"] = {"Mulberry": {"lat": "north", "lng": 105.784681195317}}
+    with pytest.raises(ValueError, match="preset 'Mulberry'"):
+        validate(cfg)
+
+    cfg = copy.deepcopy(DEFAULTS)
+    cfg["search"]["presets"] = {"Mulberry": {"lat": 20.98}}
+    with pytest.raises(ValueError, match="preset 'Mulberry'"):
+        validate(cfg)

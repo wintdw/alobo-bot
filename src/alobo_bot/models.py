@@ -31,6 +31,18 @@ class Branch:
     booking_types: list[str] = field(default_factory=list)
     open_hour: float | None = None
     close_hour: float | None = None
+    status: int | None = None
+
+    @property
+    def is_locked(self) -> bool:
+        """Whether the venue is withdrawn and so cannot be booked.
+
+        The branch list marks a locked branch ``status == -1`` (its name often
+        carries "(khóa)" / "(đã khóa tạo cn mới)") and a removed one ``-2``; the
+        app drops exactly those before it lists anything, and their courts are no
+        longer for sale. A payload that omits the field is taken as active.
+        """
+        return self.status is not None and self.status < 0
 
     @property
     def bookable(self) -> tuple[int, int] | None:
@@ -70,6 +82,7 @@ class Branch:
             booking_types=list(data.get("bookingTypes") or []),
             open_hour=_number(data.get("morningStartWorkingTime")),
             close_hour=_number(data.get("afternoonEndWorkingTime")),
+            status=_integer(data.get("status")),
         )
 
 
@@ -283,6 +296,10 @@ class SocialSession:
     ticket_price: float
     max_player: int
     current_player: int
+    # The sport the ticket is for. The session-search endpoint ignores its own
+    # `types` filter and returns every branch with a booking, so this is how a
+    # pickleball search keeps badminton/football tickets out.
+    sport_type: int | None = None
     court_names: list[str] = field(default_factory=list)
     booking_code: str = ""
     branch: Branch | None = None  # filled in by search, so a flat ranking can name its venue
@@ -303,6 +320,7 @@ class SocialSession:
     def from_api(cls, data: dict) -> "SocialSession":
         services = data.get("services") or []
         start = _parse_dt(services[0].get("startTime")) if services else _parse_dt(data.get("time"))
+        sport = data.get("sportType")
         return cls(
             id=data.get("id") or "",
             name=data.get("name") or "",
@@ -311,6 +329,7 @@ class SocialSession:
             ticket_price=float(data.get("ticketPrice") or 0),
             max_player=int(data.get("maxPlayer") or 0),
             current_player=int(data.get("currentPlayer") or 0),
+            sport_type=int(sport) if sport is not None else None,
             court_names=[s.get("serviceName") or "" for s in services],
             booking_code=str(data.get("bookingCode") or ""),
         )
@@ -415,6 +434,12 @@ def _number(value: object) -> float | None:
         return float(value)  # type: ignore[arg-type]
     except (TypeError, ValueError):
         return None
+
+
+def _integer(value: object) -> int | None:
+    """A JSON number as an int; None when absent or unusable."""
+    number = _number(value)
+    return int(number) if number is not None else None
 
 
 def _parse_window(text: str) -> tuple[int, int] | None:

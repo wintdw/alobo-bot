@@ -93,6 +93,7 @@ def parse_availability(value: str | None) -> str:
 @dataclass(slots=True)
 class FindQuery:
     place: str | None = None
+    preset: str | None = None
     latitude: float | None = None
     longitude: float | None = None
     radius_km: float = 3.0
@@ -164,13 +165,26 @@ class FindResult:
 
     @property
     def ranked_social(self) -> list[SocialSession]:
-        """Every ticket on sale, cheapest first.
+        """Every ticket on sale: nearest first, then cheapest, then fullest window.
 
         One row per ticket, like :attr:`ranked`: sessions at one venue differ in
         time and price, so each is its own row.
+
+        Distance leads, because travelling to the venue is what decides whether a
+        ticket is usable at all; a ticket whose branch has no known distance (a
+        text-place search) sorts with the far ones. Price breaks distance ties
+        (cheapest first), and the last key prefers the session that covers most of
+        the requested window: a ticket running the whole window answers the search
+        more fully than one covering an hour of it.
         """
         sessions = [session for res in self.results for session in res.sessions]
-        sessions.sort(key=lambda s: (s.ticket_price, s.start or dt.datetime.max))
+        start, end = window_bounds(self.query.day, self.query.start_minute, self.query.end_minute)
+        sessions.sort(key=lambda s: (
+            s.distance_km if s.distance_km is not None else 1e9,
+            s.ticket_price,
+            -_session_window_minutes(s, start, end),
+            s.start.replace(tzinfo=None) if s.start else dt.datetime.max,
+        ))
         return sessions
 
 
@@ -191,10 +205,38 @@ def place_score(haystack: str, place: str) -> int:
     return sum(1 for token in tokens if token in hay)
 
 
+def presets_config(cfg: dict) -> dict[str, tuple[float, float]]:
+    """Saved places from ``config.search.presets`` as name -> (latitude, longitude)."""
+    raw = cfg["search"].get("presets") or {}
+    if not isinstance(raw, dict):
+        return {}
+    presets: dict[str, tuple[float, float]] = {}
+    for key, value in raw.items():
+        try:
+            presets[str(key)] = (float(value["lat"]), float(value["lng"]))
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError(f"config: preset {key!r} needs numeric lat and lng") from exc
+    return presets
+
+
+def match_preset(cfg: dict, name: str) -> tuple[str, float, float] | None:
+    """(name, latitude, longitude) for a saved place, or None when *name* is not one.
+
+    The lookup is case-insensitive and whitespace-tolerant, so a name typed into
+    the area field ("mulberry") finds the place declared as "Mulberry".
+    """
+    wanted = name.strip().casefold()
+    for key, (latitude, longitude) in presets_config(cfg).items():
+        if key.strip().casefold() == wanted:
+            return key, latitude, longitude
+    return None
+
+
 def build_query(
     cfg: dict,
     *,
     place: str | None = None,
+    preset: str | None = None,
     latitude: float | None = None,
     longitude: float | None = None,
     radius_km: float | None = None,
@@ -207,10 +249,33 @@ def build_query(
     availability: str | None = None,
     target: str | None = None,
 ) -> FindQuery:
-    """Merge CLI overrides with config defaults into a :class:`FindQuery`."""
+    """Merge CLI overrides with config defaults into a :class:`FindQuery`.
+
+    A *place* — or an explicit *preset* — that names a saved place in
+    ``config.search.presets`` searches around that spot instead of the text, so
+    the area field doubles as the picker. Explicit coordinates win over a saved
+    pair, since they are the operator's own pick.
+    """
     search = cfg["search"]
+    if place is not None and not place.strip():
+        # The page's Area dropdown submits its blank "no area" entry as an empty
+        # string; treat that as no area (the coordinates, else the default), not as
+        # a text match against nothing.
+        place = None
+    saved = match_preset(cfg, preset) if preset else None
+    if preset and saved is None:
+        known = ", ".join(presets_config(cfg)) or "none configured"
+        raise ValueError(f"unknown preset {preset!r}; known presets: {known}")
+    if saved is None and place:
+        saved = match_preset(cfg, place)
+    if saved is not None:
+        preset, saved_lat, saved_lng = saved
+        if latitude is None and longitude is None:
+            latitude, longitude = saved_lat, saved_lng
+            place = None
     return FindQuery(
         place=place if place is not None else (None if latitude is not None else search["default_place"]),
+        preset=preset or None,
         latitude=latitude,
         longitude=longitude,
         radius_km=float(radius_km if radius_km is not None else search["radius_km"]),
@@ -274,31 +339,56 @@ def find_cheapest(cfg: dict, query: FindQuery, client: AloboClient | None = None
     return result
 
 
-def _shortlist(branches: list[Branch], query: FindQuery, sport_value: int) -> list[Branch]:
-    """Sport-match, then narrow by distance or place text, then cap."""
-    sporty = [b for b in branches if b.sport_type == sport_value]
-    if not sporty:
-        sporty = [b for b in branches if query.sport in normalize(b.name)]
+def _sport_branches(branches: list[Branch], query: FindQuery, sport_value: int) -> list[Branch]:
+    """Branches that play the searched sport — by declared type, else by name.
 
+    ``branch.type`` is the sport the venue is listed under; when no branch
+    declares it (some payloads leave it off), fall back to its name so a
+    name-only match still works. Locked/removed venues are dropped here: the
+    branch list keeps them (so the app can show a "site closed" page), but their
+    courts are no longer for sale, so they are not results to price.
+    """
+    sporty = [b for b in branches if not b.is_locked and b.sport_type == sport_value]
+    if not sporty:
+        sporty = [b for b in branches if not b.is_locked and query.sport in normalize(b.name)]
+    return sporty
+
+
+def _narrow_by_location(branches: list[Branch], query: FindQuery) -> list[Branch]:
+    """The searched branches that sit in the search area, best match first.
+
+    Coordinates: within ``radius_km`` of the origin, nearest first. A text place:
+    branches whose name/address matches, best match first.
+
+    Deliberately uncapped. Pricing a court costs a few API calls *per branch*, so
+    the court shortlist caps itself; tickets arrive in one call for every branch
+    at once, so there is no per-branch cost to bound and capping here — as
+    :func:`_shortlist` does — would hide a venue that sells tickets but sits past
+    the court cap.
+    """
     if query.latitude is not None and query.longitude is not None:
         scored: list[tuple[float, Branch]] = []
-        for branch in sporty:
-            if branch.latitude is None or branch.longitude is None:
-                continue
-            distance = haversine_km(query.latitude, query.longitude, branch.latitude, branch.longitude)
-            if distance <= query.radius_km:
+        for branch in branches:
+            distance = _branch_distance(query, branch)
+            if distance is not None and distance <= query.radius_km:
                 scored.append((distance, branch))
         scored.sort(key=lambda pair: pair[0])
-        return [branch for _, branch in scored[: query.max_branches]]
+        return [branch for _, branch in scored]
 
     place = query.place or ""
     ranked: list[tuple[int, str, Branch]] = []
-    for branch in sporty:
+    for branch in branches:
         score = place_score(f"{branch.name} {branch.address}", place)
         if score > 0:
             ranked.append((-score, normalize(branch.name), branch))
     ranked.sort(key=lambda item: (item[0], item[1]))
-    return [branch for _, _, branch in ranked[: query.max_branches]]
+    return [branch for _, _, branch in ranked]
+
+
+def _shortlist(branches: list[Branch], query: FindQuery, sport_value: int) -> list[Branch]:
+    """The branches to price: sport-matched, in the search area, capped for cost."""
+    located = _narrow_by_location(_sport_branches(branches, query, sport_value), query)
+    return located[: query.max_branches]
 
 
 def _area_sports(areas: list[dict]) -> dict[str, int]:
@@ -528,7 +618,16 @@ def _sellable_minutes(
 
 
 def _attach_sessions(client: AloboClient, result: FindResult, query: FindQuery, sport_value: int) -> None:
-    """Attach social/open-play sessions for the day to the matching branches."""
+    """Attach social/open-play tickets for the day to every branch selling them.
+
+    The candidate set is the branch list the ticket endpoint returns, not the
+    court shortlist: that shortlist is capped for pricing cost and would drop a
+    venue whose tickets are on sale just because it sits past the cap. The
+    endpoint itself ignores its ``types`` argument (it answers with every branch
+    holding any booking, in every sport and province), so the sport is read from
+    each ticket — see :func:`_session_sport` — and the search area is applied
+    here.
+    """
     start, end = window_bounds(query.day, query.start_minute, query.end_minute)
     day_start = dt.datetime.combine(query.day, dt.time())
     try:
@@ -539,16 +638,42 @@ def _attach_sessions(client: AloboClient, result: FindResult, query: FindQuery, 
         )
     except Exception:  # noqa: BLE001 - sessions are a bonus, never fatal
         return
-    by_id = {res.branch.id: res for res in result.results}
+    branches: dict[str, Branch] = {}
+    tickets: dict[str, list[SocialSession]] = {}
     for branch, sessions in pairs:
-        res = by_id.get(branch.id)
-        if res is None:
+        if branch.is_locked:  # a withdrawn venue's tickets are no longer on sale
             continue
-        kept = [s for s in sessions if _session_in_window(s, start, end)]
-        for session in kept:
+        kept = [
+            session
+            for session in sessions
+            if _session_sport(session, branch, sport_value) and _session_in_window(session, start, end)
+        ]
+        if kept:
+            branches[branch.id] = branch
+            tickets[branch.id] = kept
+    by_id = {res.branch.id: res for res in result.results}
+    for branch in _narrow_by_location(list(branches.values()), query):
+        res = by_id.get(branch.id)
+        if res is None:  # a venue that sells tickets but was not priced for courts
+            res = BranchResult(branch=branch, distance_km=_branch_distance(query, branch))
+            by_id[branch.id] = res
+            result.results.append(res)
+        for session in tickets[branch.id]:
             session.branch = res.branch
             session.distance_km = res.distance_km
-        res.sessions = kept
+        res.sessions = tickets[branch.id]
+
+
+def _session_sport(session: SocialSession, branch: Branch, sport_value: int) -> bool:
+    """Whether a ticket is for the sport being searched.
+
+    Each booking names its own ``sportType``, which is the precise signal (a
+    branch listed under one sport can still ticket another); the branch's type is
+    the fallback for a payload that omits it.
+    """
+    if session.sport_type is not None:
+        return session.sport_type == sport_value
+    return branch.sport_type == sport_value
 
 
 def _session_in_window(session: SocialSession, start: dt.datetime, end: dt.datetime) -> bool:
@@ -556,3 +681,24 @@ def _session_in_window(session: SocialSession, start: dt.datetime, end: dt.datet
         return True
     session_start = session.start.replace(tzinfo=None)
     return start <= session_start < end
+
+
+def _session_window_minutes(
+    session: SocialSession,
+    start: dt.datetime,
+    end: dt.datetime,
+) -> float:
+    """How much of a ticket's session falls inside the requested window, in minutes.
+
+    A ticket buys the whole session, so the window is the yardstick: a session
+    running the whole window covers more of it than one covering a single hour.
+    The session's own clock is naive-by-comparison here — the window is built from
+    the query's day — so any timezone the payload carried is stripped first.
+    Sessions with no start time cannot be measured and score zero.
+    """
+    if session.start is None:
+        return 0.0
+    session_start = session.start.replace(tzinfo=None)
+    session_end = session_start + dt.timedelta(minutes=session.duration_min)
+    overlap = min(session_end, end) - max(session_start, start)
+    return max(overlap.total_seconds() / 60.0, 0.0)

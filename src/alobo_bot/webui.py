@@ -10,16 +10,18 @@ from __future__ import annotations
 
 import datetime as dt
 import html
+import json
 import urllib.parse
 
-from .report import hours_label, money
+from .report import area_label, hours_label, money
 from .availability import label as availability_label
+from .pricing import ClockError, parse_clock
 from .search import FindResult
 
 MONTHS = "01 02 03 04 05 06 07 08 09 10 11 12".split()
 
 BRAND = "Alobo"
-BRAND_TAGLINE = "Cheapest pickleball courts"
+BRAND_TAGLINE = "Cheapest pickleball courts and tickets"
 
 
 def logo_svg(badge: str, ball: str) -> str:
@@ -115,10 +117,12 @@ button:disabled { opacity:.55; cursor:progress; }
 .btn-secondary { background:transparent; color:var(--fg); border-color:var(--line-strong); }
 .btn-secondary:hover:not(:disabled) { border-color:var(--accent); color:var(--accent);
   background: color-mix(in srgb, var(--accent) 8%, transparent); }
+.presets { display:flex; flex-wrap:wrap; gap:.5rem; }
+.presets[hidden] { display:none; }   /* the flex display would otherwise beat [hidden] */
+.presets button { padding-block:.45rem; font-size:.9rem; }
+.presets .range { margin-inline-start:.4rem; font-weight:500; opacity:.75; }
 .actions { display:flex; flex-wrap:wrap; align-items:center; gap:.6rem;
   margin-block-start:1.3rem; padding-block-start:1.2rem; border-block-start:1px solid var(--line); }
-.actions .hint { margin:0; }
-.actions .note { margin-inline-start:auto; }
 .geo-status { margin:.5rem 0 0; }
 .geo-status:empty { display:none; }
 .table-wrap { overflow-x:auto; border:1px solid var(--line); border-radius:var(--radius);
@@ -130,7 +134,7 @@ thead th { border-top:0; background:color-mix(in srgb, var(--line) 35%, transpar
   position:sticky; top:0; }
 td.num, th.num { text-align:right; font-variant-numeric:tabular-nums; }
 td.status { white-space:nowrap; font-size:.82rem; font-weight:600; }
-td.tariff { font-size:.82rem; color:var(--muted); }
+td.target { font-size:.82rem; color:var(--muted); }
 td.status-free { color: var(--accent); }
 td.status-partial { color: var(--fg); }
 td.status-booked { color: var(--warn); }
@@ -143,7 +147,17 @@ tbody tr:hover td { background:color-mix(in srgb, var(--accent) 6%, transparent)
 .error { background:color-mix(in srgb, var(--warn) 12%, var(--card));
   border:1px solid var(--warn); color:var(--warn); }
 .venue-sub { color:var(--muted); font-size:.82rem; }
-footer { color:var(--muted); font-size:.8rem; padding-block:2rem 3rem; }
+footer { color:var(--muted); font-size:.8rem; padding-block:2.5rem 3rem;
+  margin-block-start:3rem; border-block-start:1px solid var(--line); }
+.footer-grid { display:grid; gap:1.5rem 2.5rem;
+  grid-template-columns:minmax(0, 2fr) minmax(0, 1fr); }
+.footer-title { margin:0 0 .5rem; font-size:.78rem; font-weight:700;
+  text-transform:uppercase; letter-spacing:.06em; color:var(--muted); }
+.footer-block p { margin:0; max-width:44rem; }
+.footer-links { list-style:none; margin:0; padding:0; display:grid; gap:.35rem; }
+.footer-fineprint { margin:1.75rem 0 0; padding-block-start:1.25rem;
+  border-block-start:1px solid var(--line); max-width:52rem; }
+@media (max-width: 40rem) { .footer-grid { grid-template-columns:1fr; } }
 """.strip()
 
 SCRIPT = """
@@ -157,10 +171,86 @@ addEventListener('submit', (e) => {
 });
 
 // Progressive enhancement: the geolocation button stays hidden unless the
-// browser supports it, so without JS the form is unchanged (type a place by hand).
-// It fills the coordinates and names the area from them; the search runs when
-// the user submits.
+// browser supports it, so without JS the form is unchanged (pick an area or type
+// coordinates by hand). It fills the coordinates and names the area from them;
+// the search runs when the user submits.
 const GEOCODER = 'https://api.bigdatacloud.net/data/reverse-geocode-client';
+
+const areaSelect = document.getElementById('place');
+
+// Put *name* in the Area dropdown, adding it as an option when the list does not
+// already offer it — a name the geocoder returned for the current location, which
+// no district need match. A select silently ignores a value it has no option for,
+// so without this the reverse-geocoded area would be dropped.
+function selectArea(name) {
+  if (!areaSelect || !name) return;
+  if (!Array.from(areaSelect.options).some((option) => option.value === name)) {
+    areaSelect.querySelectorAll('option[data-geocoded]').forEach((option) => option.remove());
+    const option = new Option(name, name, true, true);
+    option.dataset.geocoded = '1';
+    areaSelect.add(option);
+  }
+  areaSelect.value = name;
+}
+
+// Progressive enhancement: choosing a saved place in the Area dropdown fills in
+// its coordinates, so the numbers are visible (and editable) before the search
+// runs. Choosing an ordinary area clears the coordinates this script filled, so a
+// stale spot cannot override the area the user actually asked for. Without
+// JavaScript the server still resolves a saved place by name.
+const savedEl = document.getElementById('saved-places');
+const savedPlaces = savedEl ? JSON.parse(savedEl.textContent) : null;
+let coordinatesFromSavedPlace = false;
+
+function applySavedPlace() {
+  if (!savedPlaces || !areaSelect) return;
+  const lat = document.getElementById('lat');
+  const lng = document.getElementById('lng');
+  if (!lat || !lng) return;
+  const wanted = areaSelect.value.trim().toLowerCase();
+  const name = Object.keys(savedPlaces)
+    .find((key) => key.trim().toLowerCase() === wanted);
+  if (name) {
+    lat.value = savedPlaces[name][0];
+    lng.value = savedPlaces[name][1];
+    coordinatesFromSavedPlace = true;
+  } else if (coordinatesFromSavedPlace) {
+    lat.value = '';
+    lng.value = '';
+    coordinatesFromSavedPlace = false;
+  }
+}
+
+if (areaSelect && savedPlaces) {
+  areaSelect.addEventListener('change', applySavedPlace);
+  // Hand-typed coordinates are the user's own, so a later area change keeps them.
+  // (Selecting an option here does not fire 'input', so this only sees real edits.)
+  ['lat', 'lng'].forEach((id) => {
+    const box = document.getElementById(id);
+    if (box) box.addEventListener('input', () => { coordinatesFromSavedPlace = false; });
+  });
+  // A bookmarked search carries only the name, so fill the boxes it left blank.
+  const lat = document.getElementById('lat');
+  const lng = document.getElementById('lng');
+  if (!lat.value && !lng.value) applySavedPlace();
+}
+
+// Progressive enhancement: the quick windows (Morning/Afternoon/Night) fill the
+// From/To boxes so the usual windows need neither typing nor picking. Like the
+// location button, they only fill the fields — the search waits for "Find", so
+// the window they set is still visible and editable before it runs.
+const presetRow = document.getElementById('window-presets');
+if (presetRow) {
+  presetRow.hidden = false;
+  presetRow.addEventListener('click', (e) => {
+    const preset = e.target.closest('button[data-from]');
+    if (!preset) return;
+    document.getElementById('from').value = preset.dataset.from;
+    document.getElementById('to').value = preset.dataset.to;
+    const hint = document.getElementById('presets-hint');
+    if (hint) hint.textContent = preset.textContent.trim() + ': press "Find" to search.';
+  });
+}
 
 // "Cầu Giấy, Hà Nội" from the free key-less geocoder's reply.
 function areaFromGeocode(data) {
@@ -191,6 +281,7 @@ if (geoBtn && navigator.geolocation) {
         const longitude = pos.coords.longitude.toFixed(6);
         document.getElementById('lat').value = latitude;
         document.getElementById('lng').value = longitude;
+        coordinatesFromSavedPlace = false;   // these are the user's own coordinates now
         if (geoStatus) geoStatus.textContent = 'Naming your area…';
         let area = '';
         try {
@@ -198,17 +289,16 @@ if (geoBtn && navigator.geolocation) {
         } catch (err) {
           area = '';
         }
-        const place = document.getElementById('place');
-        if (place && area) place.value = area;
+        if (area) selectArea(area);
         geoBtn.disabled = false;
         if (geoStatus) geoStatus.textContent = area
-          ? 'Area set to "' + area + '" — press "Find" to search.'
-          : 'Location filled in — press "Find" to search.';
+          ? 'Area set to "' + area + '"; press "Find" to search.'
+          : 'Location filled in; press "Find" to search.';
       },
       (err) => {
         geoBtn.disabled = false;
         if (geoStatus) geoStatus.textContent =
-          'Could not get your location (' + err.message + '). Enter an area manually.';
+          'Could not get your location (' + err.message + '). Pick an area instead.';
       },
       { maximumAge: 300000, timeout: 10000 }
     );
@@ -231,30 +321,33 @@ def field(
     placeholder: str = "",
     step: str = "",
     wide: bool = False,
-    options: list[str] | None = None,
 ) -> str:
-    """One labelled control, with its hint wired up via aria-describedby.
-
-    With *options* the input also offers a native suggestion dropdown (a
-    ``<datalist>``): clicking shows the list, typing filters it, and any value
-    outside the list is still accepted.
-    """
+    """One labelled control, with its hint wired up via aria-describedby."""
     described = f' aria-describedby="{name}-hint"' if hint else ""
     step_attr = f' step="{step}"' if step else ""
     placeholder_attr = f' placeholder="{esc(placeholder)}"' if placeholder else ""
     hint_html = f'<span class="hint" id="{name}-hint">{esc(hint)}</span>' if hint else ""
-    list_attr = ""
-    datalist = ""
-    if options:
-        list_id = f"{name}-options"
-        list_attr = f' list="{list_id}"'
-        items = "".join(f'<option value="{esc(option)}"></option>' for option in options)
-        datalist = f'<datalist id="{list_id}">{items}</datalist>'
     return f"""<div class="field{' wide' if wide else ''}">
   <label for="{name}">{esc(label)}</label>
-  <input id="{name}" name="{name}" type="{type}" value="{esc(value)}"{step_attr}{placeholder_attr}{list_attr}{described}>
-  {hint_html}{datalist}
+  <input id="{name}" name="{name}" type="{type}" value="{esc(value)}"{step_attr}{placeholder_attr}{described}>
+  {hint_html}
 </div>"""
+
+
+def time_value(text: object, fallback: str) -> str:
+    """The value to put in an ``<input type="time">``: ``HH:MM`` within the day.
+
+    A time input blanks any value it cannot represent, and a blanked field submits
+    as empty — so a leftover ``?to=24:00`` (a window ending at midnight, which the
+    CLI accepts) is clamped to the day's last minute and an unparseable value falls
+    back to the field's default, rather than losing the box and failing the search.
+    """
+    try:
+        minute = parse_clock(str(text))
+    except ClockError:
+        return fallback
+    minute = min(minute, 24 * 60 - 1)
+    return f"{minute // 60:02d}:{minute % 60:02d}"
 
 
 def select_field(
@@ -278,18 +371,61 @@ def select_field(
 </div>"""
 
 
+def area_field(
+    name: str,
+    label: str,
+    areas: list[str],
+    presets: dict[str, tuple[float, float]],
+    selected: str,
+    hint: str = "",
+) -> str:
+    """The Area control: one ``<select>``, the saved places grouped at the top.
+
+    A saved place leads the list (under "Preset") because picking one searches
+    around its own coordinates; the configured districts follow (under "Area").
+    A name in neither list — one the current-location button reverse-geocoded, or
+    one carried in a bookmarked URL — is added as its own selected option so the
+    choice survives, instead of the box silently snapping back to the first entry.
+    The blank entry means "no area": the search then uses the coordinates you
+    filled in, or the configured default area.
+    """
+    known = set(areas) | set(presets)
+    body = [f'<option value=""{" selected" if not selected else ""}>{esc(AREA_ANY_LABEL)}</option>']
+    if presets:
+        group = "".join(
+            f'<option value="{esc(name)}"{" selected" if name == selected else ""}>{esc(name)}</option>'
+            for name in presets
+        )
+        body.append(f'<optgroup label="{esc(AREA_PRESET_GROUP)}">{group}</optgroup>')
+    if areas:
+        group = "".join(
+            f'<option value="{esc(area)}"{" selected" if area == selected else ""}>{esc(area)}</option>'
+            for area in areas
+        )
+        body.append(f'<optgroup label="{esc(AREA_AREA_GROUP)}">{group}</optgroup>')
+    if selected and selected not in known:
+        body.append(f'<option value="{esc(selected)}" selected>{esc(selected)}</option>')
+    described = f' aria-describedby="{name}-hint"' if hint else ""
+    hint_html = f'<span class="hint" id="{name}-hint">{esc(hint)}</span>' if hint else ""
+    return f"""<div class="field wide">
+  <label for="{name}">{esc(label)}</label>
+  <select id="{name}" name="{name}"{described}>{''.join(body)}</select>
+  {hint_html}
+</div>"""
+
+
 SPORT_OPTIONS_HINT = "Only sports with hourly court rentals are supported."
 
 # Order is the display order of the categories in the results: tickets first.
 CATEGORY_OPTIONS = [
-    ("all", "Both — tickets and courts"),
-    ("social", "Tickets only — xé vé (per person)"),
+    ("all", "Both: tickets and courts"),
+    ("social", "Tickets only: xé vé (per person)"),
     ("court", "Courts only (per court)"),
 ]
 
 AVAILABILITY_OPTIONS = [
-    ("any", "Any — quote a partly-free court for its open part"),
-    ("free", "Free only — courts open for the whole window"),
+    ("any", "Any: quote a partly-free court for its open part"),
+    ("free", "Free only: courts open for the whole window"),
 ]
 
 
@@ -303,14 +439,66 @@ def group(title: str, key: str, *fields: str) -> str:
 </div>"""
 
 
-def render_form(query: dict, sports: list[tuple[str, str]], areas: list[str]) -> str:
+AREA_ANY_LABEL = "Any area"
+AREA_PRESET_GROUP = "Preset"
+AREA_AREA_GROUP = "Area"
+
+# The quick windows (name, from, to, end as shown). The night one is labelled
+# 18:00–24:00 but fills 23:59: a time input cannot hold "24:00", and the last
+# minute of the day is the same request once the window is clipped to the
+# venue's hours.
+WINDOW_PRESETS = [
+    ("Morning", "06:00", "12:00", "12:00"),
+    ("Afternoon", "13:00", "18:00", "18:00"),
+    ("Night", "18:00", "23:59", "24:00"),
+]
+
+
+def window_presets() -> str:
+    """Quick-window buttons for the When group: they fill From/To, nothing more.
+
+    Rendered hidden so a JavaScript-less page is unchanged — without the script
+    they would do nothing, and the From/To pickers are still there to use. The
+    hint doubles as the aria-live status the script writes the picked window to.
+    """
+    buttons = "".join(
+        f'<button type="button" class="btn-secondary" data-from="{start}" '
+        f'data-to="{end}">{esc(name)} <span class="range">{start}–{shown_end}</span></button>'
+        for name, start, end, shown_end in WINDOW_PRESETS
+    )
+    return f"""<div class="field wide">
+  <div class="presets" id="window-presets" role="group" aria-label="Quick time windows" hidden>
+    {buttons}
+  </div>
+  <span class="hint" id="presets-hint" aria-live="polite">Quick windows fill From and To; the search waits for Find.</span>
+</div>"""
+
+
+AREA_HINT = ("Pick a district to match by name; Any area searches the coordinates you fill "
+             "in, or the configured default area.")
+SAVED_PLACE_HINT = ("Saved places (Preset) search around their own coordinates and fill the "
+                    "latitude/longitude boxes; districts are matched by name.")
+
+
+def render_form(query: dict, sports: list[tuple[str, str]], areas: list[str],
+                presets: dict[str, tuple[float, float]] | None = None) -> str:
+    # One picker, not two: saved places are the top group of the Area dropdown
+    # (above the districts), and the script below fills a saved place's
+    # coordinates so the numbers are visible and editable. The search resolves the
+    # name server-side too, so a page with JavaScript disabled still searches the
+    # right spot.
+    presets = presets or {}
+    saved_json = ""
+    if presets:
+        data = json.dumps(
+            {name: [lat, lng] for name, (lat, lng) in presets.items()}, ensure_ascii=False
+        ).replace("<", "\\u003c")  # keep a name from closing the script element
+        saved_json = f'<script type="application/json" id="saved-places">{data}</script>'
     return f"""<form method="get" action="/" class="card">
   {group(
       "Where", "where",
-      field("place", "Area", query.get("place") or "", wide=True,
-            options=areas,
-            hint="Pick a Hanoi district, or type any address. Leave blank to use your current location.",
-            placeholder="Cầu Giấy, Hà Nội"),
+      area_field("place", "Area", areas, presets, query.get("place") or "",
+                 hint=SAVED_PLACE_HINT if presets else AREA_HINT),
       field("lat", "Latitude", query.get("lat") or "", type="number", step="any",
             hint="Leave blank when searching by area name."),
       field("lng", "Longitude", query.get("lng") or "", type="number", step="any",
@@ -322,8 +510,9 @@ def render_form(query: dict, sports: list[tuple[str, str]], areas: list[str]) ->
       "When", "when",
       field("date", "Date", query.get("date") or dt.date.today().isoformat(), type="date",
             hint="Defaults to today."),
-      field("from", "From", query.get("from") or "18:00", placeholder="18:00"),
-      field("to", "To", query.get("to") or "21:00", placeholder="21:00"),
+      field("from", "From", time_value(query.get("from"), "18:00"), type="time"),
+      field("to", "To", time_value(query.get("to"), "21:00"), type="time"),
+      window_presets(),
   )}
   {group(
       "What", "what",
@@ -339,10 +528,9 @@ def render_form(query: dict, sports: list[tuple[str, str]], areas: list[str]) ->
   <div class="actions">
     <button type="submit" class="btn-primary">Find</button>
     <button type="button" class="btn-secondary" id="geo" hidden>Use current location</button>
-    <span class="hint note">Read-only — no booking, no payment.</span>
   </div>
   <p class="hint geo-status" id="geo-status" aria-live="polite"></p>
-</form>"""
+</form>{saved_json}"""
 
 
 def category_heading(title: str, unit: str, count: str, key: str) -> str:
@@ -374,7 +562,7 @@ def render_courts(result: FindResult) -> str:
     for index, opt in enumerate(ranked[:50], start=1):
         distance = f"{opt.distance_km:.1f} km" if opt.distance_km is not None else "—"
         status = availability_label(opt.available, opt.free_spans)
-        tariff = opt.target_name or "—"
+        target = opt.target_name or "—"
         rows.append(
             f'<tr class="{"top" if index == 1 else ""}">'
             f'<td class="rank">{index}</td>'
@@ -383,14 +571,14 @@ def render_courts(result: FindResult) -> str:
             f'<td class="num">{money(opt.hourly_price)}</td>'
             f'<td>{esc(opt.core.name)}</td>'
             f'<td class="status status-{esc(opt.available or "unknown")}">{esc(status)}</td>'
-            f'<td class="tariff">{esc(tariff)}</td>'
+            f'<td class="target">{esc(target)}</td>'
             f'<td><a href="{esc(opt.booking_url)}" rel="noopener">{esc(opt.branch.name)}</a>'
             f'<div class="venue-sub">{esc(opt.branch.address)}</div></td>'
             f'<td class="num">{distance}</td></tr>'
         )
     return heading + f"""<div class="table-wrap">
 <table>
-  <caption>Most hours available first, then cheapest per hour — one row per court</caption>
+  <caption>Most hours available first, then cheapest per hour: one row per court</caption>
   <thead><tr>
     <th scope="col">#</th>
     <th scope="col" class="num">Hours</th>
@@ -398,7 +586,7 @@ def render_courts(result: FindResult) -> str:
     <th scope="col" class="num">Per hour</th>
     <th scope="col">Court</th>
     <th scope="col">Status</th>
-    <th scope="col">Tariff</th>
+    <th scope="col">Target</th>
     <th scope="col">Venue</th>
     <th scope="col" class="num">Distance</th>
   </tr></thead>
@@ -410,10 +598,11 @@ def render_courts(result: FindResult) -> str:
 def render_social(result: FindResult) -> str:
     """The ticket category ("xé vé"): one ticket puts one person on a court.
 
-    Ranked like the courts table — one row per ticket, cheapest first.
+    Ranked like the courts table — one row per ticket, nearest venue first, then
+    cheapest, then the session covering most of the requested window.
     """
     tickets = result.ranked_social
-    heading = category_heading("Tickets (xé vé)", "per person, cheapest first",
+    heading = category_heading("Tickets (xé vé)", "per person, nearest then cheapest then fullest window",
                                f"{len(tickets)} ticket(s)", "tickets")
     if not tickets:
         return heading + (
@@ -438,7 +627,7 @@ def render_social(result: FindResult) -> str:
         )
     return heading + f"""<div class="table-wrap">
 <table>
-  <caption>Cheapest first — every ticket on sale in this window, one row per ticket</caption>
+  <caption>Nearest first, then cheapest: every ticket on sale in this window, one row per ticket</caption>
   <thead><tr>
     <th scope="col" class="num">Ticket</th><th scope="col">Session</th><th scope="col">Starts</th>
     <th scope="col">Ends</th><th scope="col" class="num">Spots left</th><th scope="col">Venue</th>
@@ -451,7 +640,7 @@ def render_social(result: FindResult) -> str:
 
 def render_results(result: FindResult) -> str:
     query = result.query
-    area = query.place or f"{query.latitude:.4f}, {query.longitude:.4f}"
+    area = area_label(query)
     start = f"{query.start_minute // 60:02d}:{query.start_minute % 60:02d}"
     end = f"{query.end_minute // 60:02d}:{query.end_minute % 60:02d}"
     from .pricing import window_bounds  # local import keeps module import cycle-free
@@ -466,7 +655,7 @@ def render_results(result: FindResult) -> str:
     if query.wants_courts:
         categories.append(render_courts(result))
     return f"""<section aria-labelledby="results-heading">
-  <h2 id="results-heading">Results — {esc(result.sport_name)}</h2>
+  <h2 id="results-heading">Results: {esc(result.sport_name)}</h2>
   <p class="sub">{esc(area)} · {query.day:%d/%m/%Y} {start}–{end_label} ·
      {result.branches_scanned} branches scanned · updated {result.generated_at:%H:%M}</p>
   {''.join(categories)}
@@ -477,6 +666,7 @@ def render_page(
     *,
     sports: list[tuple[str, str]],
     areas: list[str],
+    presets: dict[str, tuple[float, float]] | None = None,
     query: dict | None = None,
     result: FindResult | None = None,
     error: str | None = None,
@@ -488,7 +678,7 @@ def render_page(
     if result is not None:
         body.append(render_results(result))
     elif not error:
-        body.append('<p class="empty">Enter an area and a time window to compare court and ticket prices.</p>')
+        body.append('<p class="empty">Choose an area or your current location, set a date and time window, then press Find to compare court and ticket prices.</p>')
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -502,21 +692,34 @@ def render_page(
 <header>
   <a class="skip-link" href="#content">Skip to content</a>
   <h1><a href="/">{LOGO}<span>{BRAND}</span></a></h1>
-  <p class="sub">Find the cheapest pickleball courts and tickets (xé vé) on AloBooking
-     by area and time window. Public data · read-only.</p>
+  <p class="sub">Find the cheapest pickleball courts and tickets (xé vé) on AloBooking,
+     by area and time window.</p>
 </header>
 <main id="content" tabindex="-1">
   <h2>Search criteria</h2>
-  {render_form(query or {}, sports, areas)}
+  {render_form(query or {}, sports, areas, presets)}
   {''.join(body)}
 </main>
 <footer>
-  <p>Source: AloBooking's public API (datlich.alobo.vn). Courts are listed at the tariff
-     each branch publishes for a one-time rental; tickets are the listed price per person.
-     <a href="/report.json">JSON</a> · <a href="/health">status</a> ·
-     <a href="?place=H%C3%A0%20N%E1%BB%99i&amp;from=18:00&amp;to=21:00">example: Hà Nội 18:00–21:00</a></p>
-  <p>The bot never books and never pays — it reads AloBooking's published prices and
-     its booking list to say whether a court is free, then leaves the booking to you.</p>
+  <div class="footer-grid">
+    <div class="footer-block">
+      <h2 class="footer-title">What Alobo does</h2>
+      <p>It reads AloBooking's published prices and live booking list, then ranks the
+         cheapest court or ticket for your window. It never books and never pays, so
+         booking stays with you on AloBooking.</p>
+    </div>
+    <nav class="footer-block" aria-labelledby="footer-links-title">
+      <h2 class="footer-title" id="footer-links-title">Quick links</h2>
+      <ul class="footer-links">
+        <li><a href="/report.json">Latest report (JSON)</a></li>
+        <li><a href="/health">Service status</a></li>
+        <li><a href="?place=H%C3%A0%20N%E1%BB%99i&amp;from=18:00&amp;to=21:00">Example search: Hà Nội, 18:00–21:00</a></li>
+      </ul>
+    </nav>
+  </div>
+  <p class="footer-fineprint">Prices come from the tariff each branch publishes for a
+     one-time rental and, for tickets, the listed price per person. Source: AloBooking's
+     public API (datlich.alobo.vn).</p>
 </footer>
 <script>{SCRIPT}</script>
 </body>

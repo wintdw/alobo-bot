@@ -110,7 +110,7 @@ def test_court_availability_is_unknown_without_data():
 
 def test_label_names_the_free_span_only_for_a_partial_court():
     spans = [(dt.datetime(2026, 9, 23, 20, 0), dt.datetime(2026, 9, 23, 21, 0))]
-    assert label(FREE, spans) == "free"
+    assert label(FREE, spans) == "available"
     assert label(BOOKED) == "booked"
     assert label(UNKNOWN) == "unknown"
     assert label(None) == "?"

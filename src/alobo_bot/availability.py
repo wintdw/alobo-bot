@@ -33,7 +33,7 @@ BOOKED = "booked"
 PARTIAL = "partial"
 UNKNOWN = "unknown"
 
-LABELS = {FREE: "free", BOOKED: "booked", UNKNOWN: "unknown"}
+LABELS = {FREE: "available", BOOKED: "booked", UNKNOWN: "unknown"}
 
 Span = tuple[dt.datetime, dt.datetime]
 

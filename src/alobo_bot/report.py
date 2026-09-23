@@ -7,7 +7,7 @@ import json
 import pathlib
 from typing import Any
 
-from .search import FindResult
+from .search import FindQuery, FindResult
 from .pricing import window_bounds
 from .availability import label as availability_label
 
@@ -20,6 +20,15 @@ def hours_label(value: float) -> str:
     """The sellable hours of a window as a compact label, e.g. ``6h`` / ``2.5h``."""
     text = f"{value:.1f}".rstrip("0").rstrip(".")
     return f"{text or '0'}h"
+
+
+def area_label(query: FindQuery) -> str:
+    """Where a search ran: the area text, else the saved place's name, else its coordinates."""
+    if query.place:
+        return query.place
+    if query.preset:
+        return query.preset
+    return "%.4f, %.4f" % (query.latitude, query.longitude)
 
 
 def _window_label(result: FindResult) -> str:
@@ -41,6 +50,7 @@ def to_dict(result: FindResult) -> dict[str, Any]:
         "category": query.category,
         "availability": query.availability,
         "place": query.place,
+        "preset": query.preset,
         "latitude": query.latitude,
         "longitude": query.longitude,
         "radiusKm": query.radius_km,
@@ -99,7 +109,8 @@ def _category_heading(result: FindResult, category: str) -> str:
     """A one-line label for a category, naming the unit it is priced in."""
     if category == "social":
         count = len(result.ranked_social)
-        return f"Tickets (xé vé) — per person, cheapest first · {count} ticket(s)"
+        return (f"Tickets (xé vé) — per person, nearest then cheapest then longest "
+                f"in the window · {count} ticket(s)")
     label = f"Courts — per court, most hours then cheapest rate · {len(result.ranked)} court(s)"
     if result.query.free_only:
         label += " · free only"
@@ -111,7 +122,7 @@ def render_text(result: FindResult) -> str:
     query = result.query
     lines = [
         f"Cheapest {result.sport_name} — {_window_label(result)}",
-        f"Area: {query.place or '%.4f, %.4f' % (query.latitude, query.longitude)}"
+        f"Area: {area_label(query)}"
         f" · {result.branches_scanned} branch(es) scanned",
         "",
     ]
@@ -178,8 +189,8 @@ def _text_courts(result: FindResult) -> list[str]:
             f"{money(opt.hourly_price):>10}  {dist:>6}  "
             f"{status:<19}  {opt.core.name} · {opt.branch.name}"
         )
-        tariff = f" · tariff: {opt.target_name}" if opt.target_name else ""
-        lines.append(f"       {opt.branch.address}{tariff}")
+        target = f" · target: {opt.target_name}" if opt.target_name else ""
+        lines.append(f"       {opt.branch.address}{target}")
     return lines + [""]
 
 
@@ -188,7 +199,7 @@ def render_markdown(result: FindResult) -> str:
     lines = [
         f"# Cheapest {result.sport_name} — {_window_label(result)}",
         "",
-        f"*Area:* {query.place or '%.4f, %.4f' % (query.latitude, query.longitude)}  ",
+        f"*Area:* {area_label(query)}  ",
         f"*Branches scanned:* {result.branches_scanned}  ",
         f"*Generated:* {result.generated_at:%Y-%m-%d %H:%M}",
     ]
@@ -223,7 +234,7 @@ def _markdown_social(result: FindResult) -> list[str]:
 
 def _markdown_courts(result: FindResult) -> list[str]:
     lines = ["", "## " + _category_heading(result, "court"), "",
-             "| # | Hours | Total | Per hour | Court | Status | Tariff | Venue | Distance |",
+             "| # | Hours | Total | Per hour | Court | Status | Target | Venue | Distance |",
              "|--:|------:|------:|---------:|-------|--------|--------|-------|---------:|"]
     ranked = result.ranked
     if not ranked:

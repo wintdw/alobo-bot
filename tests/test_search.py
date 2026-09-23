@@ -13,6 +13,7 @@ from alobo_bot.search import (
     parse_availability,
     parse_category,
     place_score,
+    presets_config,
 )
 
 
@@ -57,9 +58,9 @@ class FakeClient:
         return [(b, list(self._sessions[b.id])) for b in self._branches if b.id in self._sessions]
 
 
-def branch(bid, name, address, sport=5, lat=None, lng=None):
+def branch(bid, name, address, sport=5, lat=None, lng=None, status=None):
     return Branch(id=bid, name=name, address=address, sport_type=sport,
-                  latitude=lat, longitude=lng)
+                  latitude=lat, longitude=lng, status=status)
 
 
 def pickle_court(cid, setting="pickleball"):
@@ -107,6 +108,59 @@ def test_build_query_defaults_place_when_no_coords():
 def test_build_query_drops_place_when_coords_given():
     query = build_query(cfg(), latitude=21.0, longitude=105.0)
     assert query.place is None
+
+
+def test_build_query_treats_a_blank_area_as_no_area():
+    # the page's Area dropdown sends its blank entry as "", which must not become
+    # a text match against nothing (it would leave the results label with no area)
+    assert build_query(cfg(), place="").place == DEFAULTS["search"]["default_place"]
+    assert build_query(cfg(), place="  ", latitude=21.0, longitude=105.0).place is None
+
+
+def saved_place_cfg():
+    config = cfg()
+    config["search"]["presets"] = {
+        "Mulberry": {"lat": 20.987175137028466, "lng": 105.784681195317},
+    }
+    return config
+
+
+def test_build_query_resolves_a_saved_place_named_as_the_area():
+    query = build_query(saved_place_cfg(), place="mulberry")   # name matches case-insensitively
+    assert query.preset == "Mulberry"
+    assert query.latitude == pytest.approx(20.987175137028466)
+    assert query.longitude == pytest.approx(105.784681195317)
+    assert query.place is None          # a saved place searches around its coordinates
+
+
+def test_build_query_resolves_a_saved_place_passed_as_the_preset():
+    query = build_query(saved_place_cfg(), preset="Mulberry")
+    assert query.preset == "Mulberry"
+    assert query.latitude == pytest.approx(20.987175137028466)
+
+
+def test_build_query_keeps_ordinary_areas_as_text():
+    query = build_query(saved_place_cfg(), place="Mulberry Hill, Hà Nội")
+    assert query.preset is None         # not the saved name, so it stays a text place
+    assert query.place == "Mulberry Hill, Hà Nội"
+    assert query.latitude is None
+
+
+def test_build_query_prefers_explicit_coordinates_over_a_saved_place():
+    query = build_query(saved_place_cfg(), preset="Mulberry", latitude=21.0, longitude=105.0)
+    assert (query.latitude, query.longitude) == (21.0, 105.0)
+
+
+def test_build_query_rejects_an_unknown_saved_place():
+    with pytest.raises(ValueError, match="unknown preset"):
+        build_query(saved_place_cfg(), preset="Nowhere")
+
+
+def test_presets_config_reads_names_with_their_coordinates():
+    assert presets_config(saved_place_cfg()) == {
+        "Mulberry": (20.987175137028466, 105.784681195317),
+    }
+    assert presets_config(cfg()) == {}
 
 
 def test_find_ranks_cheapest_first():
@@ -162,6 +216,40 @@ def test_find_skips_court_without_price_table():
     client = FakeClient(branches, cores, {"x": [price_type(1000)]})
     result = find_cheapest(cfg(), build_query(cfg(), place="Hà Nội"), client=client)
     assert result.ranked == []
+
+
+def test_locked_venues_are_not_priced_or_listed():
+    # The branch list keeps withdrawn venues — status -1, the name carrying
+    # "(đã khóa tạo cn mới)" / "(khóa)" — and the app drops them before listing
+    # anything. Their courts are no longer for sale, so a search must not quote them.
+    branches = [branch("open", "Pickleball Open Hà Nội", "Hà Nội"),
+                branch("locked", "789 Pickleball Club (đã khóa tạo cn mới)", "Hà Nội",
+                       status=-1)]
+    cores = {"open": [pickle_court("o1")], "locked": [pickle_court("l1")]}
+    types = {"open": [price_type(100000)], "locked": [price_type(1000)]}
+    client = FakeClient(branches, cores, types)
+
+    result = find_cheapest(cfg(), build_query(cfg(), place="Hà Nội"), client=client)
+
+    assert [o.branch.id for o in result.ranked] == ["open"]
+    assert "locked" not in client.calls["cores"]  # not even fetched, so not priced
+
+
+def test_locked_venue_tickets_are_not_shown():
+    locked = branch("locked", "Sân Pickleball Đã Khóa Hà Nội", "Hà Nội", status=-1)
+    tickets = {"locked": [SocialSession(id="s1", name="Xé vé tối",
+                                        start=dt.datetime(2026, 9, 22, 19, 0), duration_min=120,
+                                        ticket_price=50000, max_player=10, current_player=1,
+                                        sport_type=5)]}
+    client = FakeClient([locked], {}, {}, sessions=tickets)
+
+    result = find_cheapest(
+        cfg(),
+        build_query(cfg(), place="Hà Nội", day=dt.date(2026, 9, 22), category="social"),
+        client=client,
+    )
+
+    assert result.ranked_social == []
 
 
 def test_find_prices_courts_whose_yard_type_is_unset():
@@ -291,7 +379,7 @@ def test_social_category_ranks_tickets_cheapest_first_and_names_the_venue():
         client=client,
     )
 
-    assert [s.id for s in result.ranked_social] == ["s2", "s1"]  # cheapest ticket first
+    assert [s.id for s in result.ranked_social] == ["s2", "s1"]  # no distances here, so price decides
     assert result.ranked_social[0].branch.name == "Pickleball Hà Nội 2"
     assert result.ranked_social[1].spots_left == 10
 
@@ -334,6 +422,126 @@ def test_ranked_social_lists_every_ticket_of_a_venue_cheapest_first():
 
     assert [s.id for s in result.ranked_social] == ["s2", "s1"]  # one row per ticket
     assert len(result.results[0].sessions) == 2
+
+
+def test_social_ranking_puts_the_nearest_venue_first_even_when_it_costs_more():
+    # Distance leads the ticket ranking, so a nearer ticket beats a cheaper far one.
+    branches = [branch("near", "Pickleball Gần", "Hà Nội", lat=21.0285, lng=105.8542),
+                branch("far", "Pickleball Xa", "Hà Nội", lat=21.0700, lng=105.8542)]
+    tickets = {
+        "near": [SocialSession(id="near", name="Xé vé gần", start=dt.datetime(2026, 9, 22, 19, 0),
+                               duration_min=120, ticket_price=80000, max_player=10,
+                               current_player=1)],
+        "far": [SocialSession(id="far", name="Xé vé xa", start=dt.datetime(2026, 9, 22, 19, 0),
+                              duration_min=120, ticket_price=30000, max_player=10,
+                              current_player=1)],
+    }
+    client = FakeClient(branches, {}, {}, sessions=tickets)
+
+    result = find_cheapest(
+        cfg(),
+        build_query(cfg(), latitude=21.0285, longitude=105.8542, radius_km=10,
+                    day=dt.date(2026, 9, 22), category="social"),
+        client=client,
+    )
+
+    assert [s.id for s in result.ranked_social] == ["near", "far"]
+
+
+def test_social_ranking_ties_on_price_go_to_the_session_covering_more_of_the_window():
+    # Same venue, same price: the session that runs more of the requested window
+    # (18:00-21:00) is the fuller answer.
+    branches = [branch("a", "Pickleball Hà Nội", "Hà Nội")]
+    tickets = {"a": [
+        SocialSession(id="short", name="Xé vé ngắn", start=dt.datetime(2026, 9, 22, 18, 0),
+                      duration_min=60, ticket_price=50000, max_player=10, current_player=1),
+        SocialSession(id="long", name="Xé vé dài", start=dt.datetime(2026, 9, 22, 19, 0),
+                      duration_min=120, ticket_price=50000, max_player=10, current_player=1),
+    ]}
+    client = FakeClient(branches, {}, {}, sessions=tickets)
+
+    result = find_cheapest(
+        cfg(),
+        build_query(cfg(), place="Hà Nội", day=dt.date(2026, 9, 22),
+                    start_minute=18 * 60, end_minute=21 * 60, category="social"),
+        client=client,
+    )
+
+    assert [s.id for s in result.ranked_social] == ["long", "short"]
+
+
+def test_a_ticket_venue_past_the_court_cap_still_shows_its_tickets():
+    # The court shortlist is capped to bound per-branch pricing cost, but tickets
+    # come from one call covering every branch, so a venue whose tickets are on
+    # sale must not be dropped just because the court cap did not reach it.
+    branches = [branch("a", "Pickleball Alpha Hà Nội", "Hà Nội"),
+                branch("swin", "Swin Pickleball club 214 Nguyễn Xiển", "Hà Nội")]
+    tickets = {"swin": [SocialSession(id="s1", name="Xé vé tối",
+                                      start=dt.datetime(2026, 9, 22, 19, 0),
+                                      duration_min=180, ticket_price=90000, max_player=8,
+                                      current_player=2)]}
+    client = FakeClient(branches, {"a": [pickle_court("a1")]}, {"a": [price_type(100000)]},
+                        sessions=tickets)
+
+    result = find_cheapest(
+        cfg(),
+        build_query(cfg(), place="Hà Nội", day=dt.date(2026, 9, 22), max_branches=1),
+        client=client,
+    )
+
+    assert [o.branch.id for o in result.ranked] == ["a"]          # cap priced only "a"
+    assert [s.id for s in result.ranked_social] == ["s1"]         # but "swin" still sells tickets
+    assert result.ranked_social[0].branch.name == "Swin Pickleball club 214 Nguyễn Xiển"
+
+
+def test_tickets_are_kept_or_dropped_by_their_own_sport():
+    # The endpoint ignores its `types` argument, so a ticket must be filtered by the
+    # sport it names: a pickleball ticket is kept even at a branch listed under
+    # another sport, and a badminton ticket is dropped even at a pickleball branch.
+    branches = [branch("mixed", "Sân đa năng Hà Nội", "Hà Nội", sport=2),
+                branch("pick", "Pickleball Hà Nội", "Hà Nội", sport=5)]
+    tickets = {
+        "mixed": [SocialSession(id="pb", name="Xé vé pickleball",
+                                start=dt.datetime(2026, 9, 22, 19, 0), duration_min=120,
+                                ticket_price=60000, max_player=10, current_player=1,
+                                sport_type=5)],
+        "pick": [SocialSession(id="bad", name="Xé vé cầu lông",
+                               start=dt.datetime(2026, 9, 22, 19, 0), duration_min=120,
+                               ticket_price=40000, max_player=10, current_player=1,
+                               sport_type=2)],
+    }
+    client = FakeClient(branches, {}, {}, sessions=tickets)
+
+    result = find_cheapest(
+        cfg(),
+        build_query(cfg(), place="Hà Nội", day=dt.date(2026, 9, 22), category="social"),
+        client=client,
+    )
+
+    assert [s.id for s in result.ranked_social] == ["pb"]
+
+
+def test_a_ticket_branch_outside_the_search_area_is_not_shown():
+    branches = [branch("near", "Pickleball Gần", "Hà Nội", lat=21.0285, lng=105.8542),
+                branch("far", "Pickleball Xa", "Hà Nội", lat=10.8231, lng=106.6297)]  # HCMC
+    tickets = {
+        "near": [SocialSession(id="n", name="Xé vé gần", start=dt.datetime(2026, 9, 22, 19, 0),
+                               duration_min=120, ticket_price=60000, max_player=10,
+                               current_player=1)],
+        "far": [SocialSession(id="f", name="Xé vé xa", start=dt.datetime(2026, 9, 22, 19, 0),
+                              duration_min=120, ticket_price=10000, max_player=10,
+                              current_player=1)],
+    }
+    client = FakeClient(branches, {}, {}, sessions=tickets)
+
+    result = find_cheapest(
+        cfg(),
+        build_query(cfg(), latitude=21.0285, longitude=105.8542, radius_km=5,
+                    day=dt.date(2026, 9, 22), category="social"),
+        client=client,
+    )
+
+    assert [s.id for s in result.ranked_social] == ["n"]   # the cheaper HCMC ticket is out of range
 
 
 def test_window_crossing_midnight_is_priced():

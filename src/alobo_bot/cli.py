@@ -23,11 +23,14 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     sub = parser.add_subparsers(dest="command", required=True)
 
     p_find = sub.add_parser("find", help="rank the cheapest courts for a place and time window")
-    p_find.add_argument("--place", help="area to search, e.g. \"Cầu Giấy, Hà Nội\"")
+    p_find.add_argument("--place", help="area or saved-place name to search, e.g. \"Cầu Giấy, Hà Nội\"")
     p_find.add_argument("--lat", type=float, help="latitude; needs --lng and uses --radius")
     p_find.add_argument("--lng", type=float, help="longitude; needs --lat")
     p_find.add_argument("--radius", type=float, default=None, metavar="KM",
                         help="search radius in km when using --lat/--lng (default from config)")
+    p_find.add_argument("--preset", metavar="NAME",
+                        help="saved place from config (search.presets); --place NAME finds "
+                             "the same spot, and --lat/--lng override both")
     p_find.add_argument("--date", default=None, metavar="YYYY-MM-DD",
                         help="day to price (default: today)")
     p_find.add_argument("--from", dest="time_from", default="18:00", metavar="HH:MM",
@@ -79,6 +82,7 @@ def _cmd_find(args: argparse.Namespace) -> int:
         query = build_query(
             cfg,
             place=args.place,
+            preset=args.preset,
             latitude=args.lat,
             longitude=args.lng,
             radius_km=args.radius,

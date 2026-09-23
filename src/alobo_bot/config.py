@@ -34,6 +34,9 @@ DEFAULTS: dict[str, Any] = {
         "sport": "pickleball",
         "default_place": "Hà Nội",
         "radius_km": 3.0,
+        # Saved places: name -> {"lat": ..., "lng": ...}, searchable wherever a
+        # place is (`find --place/--preset`, the web page's Area field).
+        "presets": {},
         "max_branches": 25,
         "workers": 6,
         "page_size": 100,
@@ -112,3 +115,14 @@ def validate(cfg: dict) -> None:
         raise ValueError("config: search.max_branches must be >= 1")
     if float(cfg["search"]["radius_km"]) <= 0:
         raise ValueError("config: search.radius_km must be > 0")
+    presets = cfg["search"].get("presets") or {}
+    if not isinstance(presets, dict):
+        raise ValueError("config: search.presets must be a mapping of name -> {lat, lng}")
+    for name, value in presets.items():
+        if not isinstance(value, dict):
+            raise ValueError(f"config: preset {name!r} must be a mapping with lat and lng")
+        for axis in ("lat", "lng"):
+            try:
+                float(value[axis])
+            except (KeyError, TypeError, ValueError):
+                raise ValueError(f"config: preset {name!r} needs a numeric {axis}") from None

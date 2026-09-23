@@ -113,7 +113,8 @@ def test_ticket_ranking_lists_every_ticket_of_a_venue():
     )
     assert [s.id for s in result.ranked_social] == ["s2", "s"]  # cheapest ticket first
     text = render_text(result)
-    assert "Tickets (xé vé) — per person, cheapest first · 2 ticket(s)" in text
+    assert ("Tickets (xé vé) — per person, nearest then cheapest then longest in the window "
+            "· 2 ticket(s)") in text
     assert "30.000đ · Xé vé sáng" in text and "50.000đ · Xé vé tối" in text
 
 
@@ -124,11 +125,11 @@ def test_court_rows_carry_the_availability_status():
 
     text = render_text(result)
     assert "status" in text
-    assert "free" in text and "booked" in text
+    assert "available" in text and "booked" in text
 
     md = render_markdown(result)
     assert "| Status |" in md
-    assert "| free |" in md and "| booked |" in md
+    assert "| available |" in md and "| booked |" in md
 
     payload = to_dict(result)
     assert payload["availability"] == "any"
@@ -162,24 +163,24 @@ def test_free_only_courts_heading_says_so():
     assert "· free only" in render_markdown(result)
 
 
-def test_court_rows_name_the_tariff_the_price_came_from():
+def test_court_rows_name_the_target_the_price_came_from():
     result = make_result()
     tariffed = result.results[1].options[0]  # Beta, the cheapest row
     tariffed.target_id = "kh"
     tariffed.target_name = "BẢNG GIÁ THUÊ SÂN"
 
-    assert "· tariff: BẢNG GIÁ THUÊ SÂN" in render_text(result)
-    assert "| Court | Status | Tariff | Venue |" in render_markdown(result)
+    assert "· target: BẢNG GIÁ THUÊ SÂN" in render_text(result)
+    assert "| Court | Status | Target | Venue |" in render_markdown(result)
     assert "| BẢNG GIÁ THUÊ SÂN |" in render_markdown(result)
 
     slot = next(o for o in to_dict(result)["options"] if o["branchId"] == "b")
     assert (slot["priceTargetId"], slot["priceTarget"]) == ("kh", "BẢNG GIÁ THUÊ SÂN")
 
 
-def test_a_court_type_without_tariffs_reports_no_tariff():
+def test_a_court_type_without_tariffs_reports_no_target():
     result = make_result()
 
-    assert "tariff:" not in render_text(result)
+    assert "target:" not in render_text(result)
     slot = to_dict(result)["options"][0]
     assert slot["priceTargetId"] is None and slot["priceTarget"] is None
 

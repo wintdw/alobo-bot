@@ -32,6 +32,16 @@ def test_branch_reads_its_working_hours():
     assert branch.bookable == (5 * 60, 23 * 60)
 
 
+def test_branch_status_marks_locked_and_removed_venues():
+    # The list marks a locked branch -1 (its name carries "(khóa)") and a removed
+    # one -2; the app drops exactly those. 0 and 1 are live.
+    assert Branch.from_api({"id": "x", "status": -1}).is_locked
+    assert Branch.from_api({"id": "x", "status": -2}).is_locked
+    assert not Branch.from_api({"id": "x", "status": 0}).is_locked
+    assert not Branch.from_api({"id": "x", "status": 1}).is_locked
+    assert not Branch.from_api({"id": "x"}).is_locked  # unstated -> treated as active
+
+
 def test_bookable_is_none_without_both_ends_and_clamps_to_the_day():
     assert Branch.from_api({"id": "x"}).bookable is None
     assert Branch.from_api({"id": "x", "morningStartWorkingTime": 6}).bookable is None

@@ -23,7 +23,7 @@ from .api import AloboClient, ApiError
 from .config import load_config, validate
 from .pricing import ClockError, parse_clock
 from .report import render_markdown, write_report
-from .search import build_query, find_cheapest
+from .search import build_query, find_cheapest, presets_config
 from .webui import render_page
 
 
@@ -50,6 +50,7 @@ def create_app() -> Any:
     report_dir = pathlib.Path(cfg["report"]["dir"])
     raw_areas = cfg["search"].get("areas") or []
     areas = [str(area) for area in raw_areas] if isinstance(raw_areas, list) else []
+    presets = presets_config(cfg)
     default_category = str(cfg["search"].get("category") or "all")
     default_availability = str(cfg["search"].get("availability") or "any")
 
@@ -73,7 +74,7 @@ def create_app() -> Any:
     async def _run_find(**kwargs: Any):
         async with state["lock"]:
             if state["busy"]:
-                raise RuntimeError("a search is already running — try again in a moment")
+                raise RuntimeError("a search is already running; try again in a moment")
             state["busy"] = True
             state["last_error"] = None
             try:
@@ -101,6 +102,7 @@ def create_app() -> Any:
             render_page(
                 sports=sports_options(),
                 areas=areas,
+                presets=presets,
                 query=raw_query,
                 result=result,
                 error=error,

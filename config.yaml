@@ -25,9 +25,19 @@ search:
   sport: pickleball         # sport key to price (see `alobo-bot sports`)
   default_place: Hà Nội     # used when neither --place nor --lat/--lng is given
   radius_km: 3.0            # max distance from --lat/--lng (ignored for text places)
+  # Saved places: a name for a coordinate pair, so a spot you search often does
+  # not have to be retyped as --lat/--lng. The name works anywhere a place does:
+  # `find --place Mulberry` (or `--preset Mulberry`), and it leads the web page's
+  # Area dropdown as its "Preset" group, above the districts. Explicit --lat/--lng
+  # still win.
+  presets:
+    Mulberry:
+      lat: 20.987175137028466
+      lng: 105.784681195317
   max_branches: 25          # cap on branches enriched with courts/prices per run
   workers: 6                # branches priced in parallel (each needs 3 API calls)
-  # Which categories a run reports, cheapest first within each:
+  # Which categories a run reports; courts by most hours then cheapest rate,
+  # tickets nearest then cheapest then fullest window:
   #   all    - both below
   #   social - "xé vé": tickets to sessions, priced per person (socialOneTime)
   #   court  - whole courts, priced per court (oneTime)
@@ -46,8 +56,8 @@ search:
   target:
   # How many branches the search endpoint returns in one page.
   page_size: 100
-  # Suggestions for the web page's Area dropdown. The field still accepts any
-  # free-text area; this only seeds the list. Add/remove Hanoi districts here.
+  # The web page's Area dropdown lists these districts (under "Area", below the
+  # saved places). Add/remove Hanoi districts here.
   areas:
     - Hà Nội
     - Ba Đình, Hà Nội
