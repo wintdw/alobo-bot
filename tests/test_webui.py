@@ -350,6 +350,19 @@ def test_ticket_rows_show_the_venue_location():
     assert 'scope="col" class="num">Distance</th>' in page
 
 
+def test_ticket_venue_links_to_the_branch_like_a_court_row():
+    # A ticket's venue opens the branch on AloBooking, exactly as a court row does.
+    page = render_social(result_with([option("a", "Alpha", 1000, 3.0)], sessions=True))
+    assert ('<a href="https://datlich.alobo.vn/san/a" rel="noopener">Alpha</a>'
+            '<div class="venue-sub">Alpha, Hà Nội</div>') in page
+
+
+def test_ticket_rows_lead_with_a_rank_like_the_courts_table():
+    page = render_social(result_with([option("a", "Alpha", 1000)], sessions=True))
+    assert '<th scope="col">#</th>' in page
+    assert '<td class="rank">1</td>' in page
+
+
 def test_ticket_rows_show_the_session_start_and_end():
     page = render_social(result_with([option("a", "Alpha", 1000, 3.0)], sessions=True))
     assert ">Starts</th>" in page and ">Ends</th>" in page

@@ -54,6 +54,7 @@ def test_to_dict_ranks_tickets_and_names_their_venue():
         "name": "Xé vé tối", "start": "2026-09-25T19:00", "end": "2026-09-25T21:00",
         "durationMin": 120,
         "ticketPrice": 50000, "spotsLeft": 6, "courts": [],
+        "bookingUrl": "https://datlich.alobo.vn/san/b",
     }]
 
 
@@ -93,14 +94,15 @@ def test_render_markdown_has_table_rows():
 def test_render_markdown_has_a_ticket_table():
     md = render_markdown(make_result(sessions=True))
     assert md.index("## Tickets (xé vé)") < md.index("## Courts — per court, most hours then cheapest rate")
-    assert "| 50.000đ | Xé vé tối | 19:00 | 21:00 | 6 | Beta | Beta address | — |" in md
+    assert ("| 1 | 50.000đ | Xé vé tối | 19:00 | 21:00 | 6 | "
+            "[Beta](https://datlich.alobo.vn/san/b) | Beta address | — |") in md
 
 
 def test_ticket_rows_show_the_venue_location():
     result = make_result(sessions=True)
     result.results[1].sessions[0].distance_km = 3.2
     assert "3.2 km · Beta address" in render_text(result)
-    assert "| Beta | Beta address | 3.2 km |" in render_markdown(result)
+    assert "| [Beta](https://datlich.alobo.vn/san/b) | Beta address | 3.2 km |" in render_markdown(result)
 
 
 def test_ticket_ranking_lists_every_ticket_of_a_venue():

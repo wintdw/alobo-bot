@@ -1,6 +1,7 @@
 import datetime as dt
 
-from alobo_bot.models import Booking, Branch, Core, CoreType, PriceTarget, SocialSession, SpecialPrice
+from alobo_bot.models import (Booking, Branch, Core, CoreType, CourtOption, PriceTarget,
+                              SocialSession, SpecialPrice)
 from alobo_bot.pricing import clip_to_hours, window_cost
 
 
@@ -207,6 +208,28 @@ def test_social_session_spots_left_and_start():
     assert session.spots_left == 6
     assert session.start is not None and session.start.hour == 8
     assert session.court_names == ["Pickleball 2"]
+
+
+def test_a_venue_and_its_court_and_ticket_all_share_one_booking_url():
+    # The court and ticket rows must link a venue the same way, so both read the
+    # branch's own deep link.
+    branch = Branch(id="b1", name="Alpha", address="Alpha address", sport_type=5,
+                    latitude=None, longitude=None)
+    expected = "https://datlich.alobo.vn/san/b1"
+    assert branch.booking_url == expected
+
+    court = CourtOption(branch=branch, core=Core(id="c1", name="Sân 1", setting="pickleball"),
+                        core_type=CoreType(id="pickleball", name="Pickleball",
+                                           normal_price=100000, normal_price_one_time=100000),
+                        total_price=100000, hours=1.0)
+    assert court.booking_url == expected
+
+    ticket = SocialSession(id="s1", name="Xé vé tối", start=None, duration_min=60,
+                           ticket_price=50000, max_player=10, current_player=4, branch=branch)
+    assert ticket.booking_url == expected
+    # a session with no branch has no venue to link to
+    assert SocialSession(id="s2", name="Xé vé", start=None, duration_min=60,
+                         ticket_price=0, max_player=1, current_player=0).booking_url == ""
 
 
 def test_booking_reads_a_legs_court_time_and_duration():

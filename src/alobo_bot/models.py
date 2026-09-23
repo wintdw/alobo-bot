@@ -7,6 +7,11 @@ from dataclasses import dataclass, field
 
 MINUTES_PER_DAY = 24 * 60
 
+# The public booking site. Branch links only resolve under ``/san/`` (see
+# :attr:`Branch.booking_url`), and both the court and ticket rows use it so a
+# venue links to the same place in either category.
+BOOKING_BASE_URL = "https://datlich.alobo.vn"
+
 
 @dataclass(slots=True)
 class SportType:
@@ -60,6 +65,17 @@ class Branch:
         start = min(max(round(self.open_hour * 60), 0), MINUTES_PER_DAY)
         end = min(max(round((self.close_hour + 1) * 60), 0), MINUTES_PER_DAY)
         return (start, end) if end > start else None
+
+    @property
+    def booking_url(self) -> str:
+        """Deep link to this venue on the AloBooking web app.
+
+        The app resolves branch links only under ``/san/``; a bare
+        ``/<branchId>`` falls through to the home route (the app's own share
+        builder emits ``{base}/san/{branchId}``). Shared by the court and ticket
+        rows so a venue links the same way in either category.
+        """
+        return f"{BOOKING_BASE_URL}/san/{self.id}"
 
     @classmethod
     def from_api(cls, data: dict) -> "Branch":
@@ -316,6 +332,16 @@ class SocialSession:
             return None
         return self.start + dt.timedelta(minutes=self.duration_min)
 
+    @property
+    def booking_url(self) -> str:
+        """Deep link to the venue selling this ticket, or "" without a branch.
+
+        The ticket row links its venue the same way the court row does, so a
+        ticket can be opened on AloBooking to book. A session the search could
+        not match to a branch has no link to offer.
+        """
+        return self.branch.booking_url if self.branch else ""
+
     @classmethod
     def from_api(cls, data: dict) -> "SocialSession":
         services = data.get("services") or []
@@ -420,10 +446,7 @@ class CourtOption:
 
     @property
     def booking_url(self) -> str:
-        # The web app only resolves branch deep links under "/san/"; a bare
-        # "/<branchId>" falls through to the home route. See the app's own share
-        # builder, which emits f"{base}/san/{branchId}".
-        return f"https://datlich.alobo.vn/san/{self.branch.id}"
+        return self.branch.booking_url
 
 
 def _number(value: object) -> float | None:

@@ -613,22 +613,31 @@ def render_social(result: FindResult) -> str:
     for index, session in enumerate(tickets[:50], start=1):
         starts = f"{session.start:%H:%M}" if session.start else "—"
         ends = f"{session.end:%H:%M}" if session.end else "—"
-        venue = session.branch.name if session.branch else "—"
+        # The venue links to AloBooking exactly as a court row does, so a ticket
+        # opens the branch to book from. A session without a branch keeps the
+        # plain name it has always shown.
+        venue = (
+            f'<a href="{esc(session.booking_url)}" rel="noopener">{esc(session.branch.name)}</a>'
+            if session.branch
+            else "—"
+        )
         address = session.branch.address if session.branch else ""
         distance = f"{session.distance_km:.1f} km" if session.distance_km is not None else "—"
         rows.append(
             f'<tr class="{"top" if index == 1 else ""}">'
+            f'<td class="rank">{index}</td>'
             f'<td class="num">{money(session.ticket_price)}</td>'
             f'<td>{esc(session.name)}<div class="venue-sub">'
             f"{esc(', '.join(session.court_names))}</div></td>"
             f'<td>{starts}</td><td>{ends}</td><td class="num">{session.spots_left}</td>'
-            f'<td>{esc(venue)}<div class="venue-sub">{esc(address)}</div></td>'
+            f'<td>{venue}<div class="venue-sub">{esc(address)}</div></td>'
             f'<td class="num">{distance}</td></tr>'
         )
     return heading + f"""<div class="table-wrap">
 <table>
   <caption>Nearest first, then cheapest: every ticket on sale in this window, one row per ticket</caption>
   <thead><tr>
+    <th scope="col">#</th>
     <th scope="col" class="num">Ticket</th><th scope="col">Session</th><th scope="col">Starts</th>
     <th scope="col">Ends</th><th scope="col" class="num">Spots left</th><th scope="col">Venue</th>
     <th scope="col" class="num">Distance</th>

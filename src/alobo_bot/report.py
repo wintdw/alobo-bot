@@ -99,6 +99,7 @@ def to_dict(result: FindResult) -> dict[str, Any]:
                 "ticketPrice": round(session.ticket_price),
                 "spotsLeft": session.spots_left,
                 "courts": session.court_names,
+                "bookingUrl": session.booking_url,
             }
             for index, session in enumerate(result.ranked_social, start=1)
         ],
@@ -213,20 +214,20 @@ def render_markdown(result: FindResult) -> str:
 
 def _markdown_social(result: FindResult) -> list[str]:
     lines = ["", "## " + _category_heading(result, "social"), "",
-             "| Ticket | Session | Starts | Ends | Spots left | Venue | Location | Distance |",
-             "|-------:|---------|--------|------|-----------:|-------|----------|---------:|"]
+             "| # | Ticket | Session | Starts | Ends | Spots left | Venue | Location | Distance |",
+             "|--:|-------:|---------|--------|------|-----------:|-------|----------|---------:|"]
     tickets = result.ranked_social
     if not tickets:
-        lines.append("| — | _none on sale in this window_ | — | — | — | — | — | — |")
+        lines.append("| — | — | _none on sale in this window_ | — | — | — | — | — | — |")
         return lines
-    for session in tickets:
+    for index, session in enumerate(tickets, start=1):
         starts = f"{session.start:%H:%M}" if session.start else "—"
         ends = f"{session.end:%H:%M}" if session.end else "—"
-        venue = session.branch.name if session.branch else "—"
+        venue = f"[{session.branch.name}]({session.booking_url})" if session.branch else "—"
         address = session.branch.address if session.branch else "—"
         distance = f"{session.distance_km:.1f} km" if session.distance_km is not None else "—"
         lines.append(
-            f"| {money(session.ticket_price)} | {session.name} | {starts} | {ends} | "
+            f"| {index} | {money(session.ticket_price)} | {session.name} | {starts} | {ends} | "
             f"{session.spots_left} | {venue} | {address} | {distance} |"
         )
     return lines
