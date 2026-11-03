@@ -23,6 +23,14 @@ from . import __version__
 from .crypto import decrypt_body, encrypt_body, signature
 from .models import Booking, Branch, Core, CoreType, LockYard, SocialSession, SportType
 
+# The Cloud Run origins now reject non-browser clients with a plain
+# ``403 {"statusCode":403,"message":"Forbidden"}`` even when the signature is
+# valid, so every request must look like it came from the web app.
+_USER_AGENT = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/125 Safari/537.36"
+)
+
 
 class ApiError(RuntimeError):
     """The API refused the request or returned an unexpected payload."""
@@ -61,6 +69,7 @@ class AloboClient:
             "x-user-app": signature(self.app_key),
             "Origin": "https://datlich.alobo.vn",
             "Referer": "https://datlich.alobo.vn/",
+            "User-Agent": _USER_AGENT,
         }
         return headers
 

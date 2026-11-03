@@ -264,8 +264,10 @@ reproduces the app's own API calls.
 
 **Hosts.** The `*.alobo.vn` API hosts are behind a Cloudflare bot check that
 answers non-browser clients with `403 error code: 1010`. The same backends are
-reachable directly through their Cloud Run origins, which serve the identical
-API without the check:
+reachable directly through their Cloud Run origins. Those origins have their own
+filter: they answer a request with no browser `User-Agent` (or `curl`/`Python-urllib`)
+with `403 {"statusCode":403,"message":"Forbidden"}`, so the client always sends a
+Chrome UA string (`api._USER_AGENT`). The origins used are:
 
 | Public host | Origin used | Serves |
 |---|---|---|
@@ -276,7 +278,7 @@ API without the check:
 `x-version-app` (app build, `2.10.3`), `x-custom-lang`, and:
 
 ```
-x-user-app = sha256_hex("<MM/dd/yyyy, HH:mm>@935b1fccd4bc45a12af095bf0bafa723")
+x-user-app = sha256_hex("<MM/dd/yyyy, HH:mm>@137b1fccd4bc45x12af095df0bafa776")
 ```
 
 The timestamp is **UTC**. The server checks it against its own clock and allows

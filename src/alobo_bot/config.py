@@ -24,7 +24,7 @@ DEFAULTS: dict[str, Any] = {
         "platform": "web",
         "version": "2.10.3",
         "lang": "vi",
-        "app_key": "935b1fccd4bc45a12af095bf0bafa723",
+        "app_key": "137b1fccd4bc45x12af095df0bafa776",
         "timeout_seconds": 30,
         "delay_min_seconds": 0.3,
         "delay_max_seconds": 0.8,

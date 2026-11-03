@@ -37,10 +37,11 @@ docs/          reverse-engineering notes: updating-api-keys.md,
 
 - **Read-only.** Never add booking, payment, or any state-changing API call.
 - **No browser.** The API is called with plain `urllib`; the Cloud Run origins
-  in `config.yaml` bypass the Cloudflare check on the `*.alobo.vn` hosts. Do not
-  add Playwright/Puppeteer. (A browser is still fine as a one-off *dev* tool —
-  e.g. to capture a reply while recovering keys — just never as a runtime
-  dependency.)
+  in `config.yaml` bypass the Cloudflare check on the `*.alobo.vn` hosts (but they
+  now answer a non-browser `User-Agent` with `403 Forbidden`, so the client always
+  sends a Chrome UA string). Do not add Playwright/Puppeteer. (A browser is still
+  fine as a one-off *dev* tool — e.g. to capture a reply while recovering keys —
+  just never as a runtime dependency.)
 - **No accounts, no user secrets.** Every endpoint the bot calls is public —
   including court availability (`get_onetime_bookings`) — so it never logs in and
   there are no credentials to store. The signing key and AES constants ship inside

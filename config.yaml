@@ -15,7 +15,7 @@ api:
   platform: web
   version: "2.10.3"          # x-version-app, mirrors the web app build
   lang: vi                   # vi | en
-  app_key: 935b1fccd4bc45a12af095bf0bafa723   # signature key (public, see src/alobo_bot/crypto.py)
+  app_key: 137b1fccd4bc45x12af095df0bafa776   # signature key (public, see src/alobo_bot/crypto.py)
   timeout_seconds: 30
   delay_min_seconds: 0.3     # politeness pause between API calls
   delay_max_seconds: 0.8

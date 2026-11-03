@@ -44,14 +44,17 @@ BUNDLE_URL = "https://datlich.alobo.vn/main.dart.js"
 # Cloudflare rejects the default urllib UA on this host with a 403.
 _UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125 Safari/537.36"
 
-# Signing keys tried when nothing is captured; the live one is a 32-char hex.
+# Signing keys tried when nothing is captured; the live one is a 32-char string
+# (the 2026-11 build's key is not pure hex).
 LITERAL_KEYS = ("Alobo-User-Key-2026",)
 
-_TABLE_RE = re.compile(r"B\.(\w+)=s\(\[([0-9,]+)\]")
+_TABLE_RE = re.compile(r"B\.(\w+)=s\(\[([0-9eE+.,-]*)\]")
 _CLASS_RE = re.compile(
-    r"A\.(dI\w+)\.prototype=\{\s*\$1\(a\)\{return\(B\.(\w+)\[a\]\^B\.(\w+)\[a\]\)"
+    r"A\.(\w+)\.prototype=\{\s*\$1\(a\)\{return\(B\.(\w+)\[a\]\^B\.(\w+)\[a\]\)(?:>>>0)?"
 )
-_NAME_RE = re.compile(r'"(e[eF]\w*)",\(\)=>\{[^}]*?new A\.(dI\w+)\(\)')
+_NAME_RE = re.compile(
+    r's\(\$,"\w+","(e\w{2,})",\(\)=>\{[^}]*?new A\.(\w+)\(\)'
+)
 
 
 def fetch_bundle(path: str | None) -> str:
@@ -66,7 +69,7 @@ def fetch_bundle(path: str | None) -> str:
 def decode_config(source: str) -> dict[str, str]:
     """Return {config-name: decoded string} for every XOR-obfuscated constant."""
     tables = {
-        m.group(1): [int(x) for x in m.group(2).split(",") if x]
+        m.group(1): [int(float(x)) for x in m.group(2).split(",") if x]
         for m in _TABLE_RE.finditer(source)
     }
     classes = {
@@ -90,12 +93,10 @@ def decode_config(source: str) -> dict[str, str]:
 def describe(value: str) -> str:
     if value.startswith("http"):
         return "URL"
-    if re.fullmatch(r"[0-9a-f]{32}", value):
-        return "32-hex (candidate signing key)"
     if value.endswith("==") and len(value) == 24:
         return "base64 16-byte (IV)"
     if len(value) == 32:
-        return "32-byte (AES key)"
+        return "32-char (AES or signing key)"
     return ""
 
 
@@ -117,37 +118,45 @@ def _sign(key: str) -> str:
     return hashlib.sha256(f"{stamp}@{key}".encode()).hexdigest()
 
 
-def verify(decoded: dict[str, str]) -> str | None:
-    """Probe the decoded origins with each candidate signing key; return the live one."""
-    origin = next(
-        (v for v in decoded.values() if v.startswith("http") and "user-app-new" in v),
-        None,
-    )
-    if not origin:
-        print("  (no user-app-new origin decoded — cannot verify)", file=sys.stderr)
+def verify(decoded: dict[str, str], origin: str | None = None) -> str | None:
+    """Probe candidate origins with each candidate signing key; return the live one."""
+    if origin:
+        origins = [origin.rstrip("/")]
+    else:
+        origins = list(
+            dict.fromkeys(
+                v.rstrip("/")
+                for v in decoded.values()
+                if v.startswith("http") and any(h in v for h in ("user-app", "user-api", "user-sv"))
+            )
+        )
+    if not origins:
+        print("  (no app origin decoded — pass --origin)", file=sys.stderr)
         return None
     candidates = dict.fromkeys(
-        [v for v in decoded.values() if re.fullmatch(r"[0-9a-f]{32}", v)] + list(LITERAL_KEYS)
+        [v for v in decoded.values() if len(v) == 32] + list(LITERAL_KEYS)
     )
-    for key in candidates:
-        request = urllib.request.Request(
-            f"{origin}/api/v1/public/sport-type",
-            headers={
-                "User-Agent": _UA,
-                "x-user-app": _sign(key),
-                "x-name-app": "alobo-user",
-                "x-platform": "web",
-                "x-version-app": "2.10.3",
-                "x-custom-lang": "vi",
-            },
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=20) as resp:  # noqa: S310
-                if resp.status == 200:
-                    print(f"  app_key = {key!r} (HTTP 200 from {origin})")
-                    return key
-        except Exception as exc:  # noqa: BLE001 - report and keep probing
-            print(f"  {key}: {exc}")
+    for origin in origins:
+        print(f"  probing {origin}")
+        for key in candidates:
+            request = urllib.request.Request(
+                f"{origin}/api/v1/public/sport-type",
+                headers={
+                    "User-Agent": _UA,
+                    "x-user-app": _sign(key),
+                    "x-name-app": "alobo-user",
+                    "x-platform": "web",
+                    "x-version-app": "2.10.3",
+                    "x-custom-lang": "vi",
+                },
+            )
+            try:
+                with urllib.request.urlopen(request, timeout=20) as resp:  # noqa: S310
+                    if resp.status == 200:
+                        print(f"  app_key = {key!r} (HTTP 200 from {origin})")
+                        return key
+            except Exception as exc:  # noqa: BLE001 - report and keep probing
+                print(f"    {key}: {exc}")
     return None
 
 
@@ -163,7 +172,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--verify",
         action="store_true",
-        help="probe the decoded origin with each candidate key and report the live one",
+        help="probe the decoded origins with each candidate key and report the live one",
+    )
+    parser.add_argument(
+        "--origin",
+        help="base URL to probe with --verify (default: every app origin decoded from the bundle)",
     )
     args = parser.parse_args(argv)
 
@@ -184,7 +197,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.verify:
         print("\nverifying signing keys against the decoded origin:")
-        verify(decoded)
+        verify(decoded, args.origin)
 
     print(
         "\nnext: put the response key / request key + IV in src/alobo_bot/crypto.py,\n"
