@@ -1,10 +1,11 @@
 # alobo-bot: a small FastAPI service that serves the latest cheapest-court
 # report and can run a fresh search on demand. No host cron needed.
 #
-# DATA LIVES ON THE HOST. ./data is bind-mounted so reports, raw snapshots and the
-# durable service state (data/state: the /status counters and recent-search cache)
-# survive container rebuilds. Make it writable by the container's uid 1000:
-#   sudo chown -R 1000:1000 data
+# DATA LIVES ON THE HOST. /var/data/alobo is bind-mounted so reports, raw
+# snapshots and the durable service state (data/state: the /status counters and
+# recent-search cache) survive container rebuilds. Make it writable by the
+# container's uid 1000:
+#   sudo install -d -o 1000 -g 1000 /var/data/alobo
 #
 # Examples:
 #   docker compose up -d --build
@@ -23,7 +24,7 @@ services:
     ports:
       - "8085:8085"
     volumes:
-      - ./data:/app/data
+      - /var/data/alobo:/app/data
     # Uncomment to override config.yaml without rebuilding the image:
     # - ./config.yaml:/app/config.yaml:ro
     command: ["serve"]
