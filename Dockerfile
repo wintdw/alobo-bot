@@ -47,5 +47,13 @@ USER alobobot
 
 # `alobo-bot serve` = report viewer + on-demand POST /find.
 EXPOSE 8085
+
+# Docker's own health signal, using the same checks as GET /health (both API
+# origins, the writable data dirs, free disk). The endpoint answers 503 when a
+# search cannot work, which makes urlopen raise and the check fail, so
+# `docker ps` shows (unhealthy) instead of a container that is up but useless.
+HEALTHCHECK --interval=30s --timeout=15s --start-period=20s --retries=3 \
+  CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8085/health', timeout=10)"]
+
 ENTRYPOINT ["alobo-bot"]
 CMD ["serve"]

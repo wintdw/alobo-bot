@@ -22,11 +22,12 @@ src/alobo_bot/
   search.py      shortlist branches -> price courts -> rank
   report.py      text / markdown / JSON rendering + report writing
   metrics.py     durable counters behind /status (requests, clients, searches)
+  health.py      /health checks: both API origins, writable dirs, state, disk
   state.py       atomic JSON read/write for the durable state files
   webui.py       server-rendered HTML page (pure functions, no FastAPI)
   cli.py         `find`, `sports`, `serve`
   web.py         FastAPI wiring: GET / page, POST /find, /report.json,
-                 /status (+ /status.json)
+                 /status (+ /status.json), /health (+ /healthz)
 tests/         pytest, pure logic only (no network)
 scripts/       recover_api_keys.py — decode the web app's obfuscated build keys
 docs/          reverse-engineering notes: updating-api-keys.md,
@@ -95,6 +96,13 @@ docs/          reverse-engineering notes: updating-api-keys.md,
   read back at start, so a restart resumes instead of resetting — keep that dir on
   the same bind mount as `data/`. `/status` is the service/health view (linked
   from the footer as "Service status").
+- **`/health` is a readiness probe, not a search.** It must stay cheap and
+  bounded: one fast attempt per upstream call (its client is tuned separately in
+  `health.health_api_config`), the probe reused for `health.ttl_seconds`, and its
+  requests kept out of the `/status` traffic counters. A `down` verdict (503)
+  means a search cannot work — the API's branch endpoint is unreachable, or the
+  report/raw directories are not writable — so it catches the permission failure
+  that otherwise only shows as a 500 on the next search.
 
 ## Keeping up with the app (API keys)
 

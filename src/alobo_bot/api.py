@@ -161,13 +161,19 @@ class AloboClient:
         return out
 
     def branches_near(self, latitude: float, longitude: float) -> list[Branch]:
-        """Branches around a coordinate (the onboarding 'near me' list)."""
+        """Branches around a coordinate (the onboarding 'near me' list).
+
+        The answer wraps its list in ``{"branches": [...]}``, unlike the paginated
+        endpoint whose ``data`` is the same shape — read either.
+        """
         payload = self.request(
             f"{self.global_url}/v2/user/branch/branches_first",
             method="POST",
             body={"latitude": latitude, "longitude": longitude},
         )
-        return self._branches(payload)
+        data = self._data(payload)
+        items = data.get("branches") if isinstance(data, dict) else data
+        return self._branches(items)
 
     def branches_page(self, last_fetch_branch: str | None = None) -> tuple[list[Branch], str | None]:
         """One page of the full branch list plus the cursor for the next page."""

@@ -21,6 +21,15 @@ api:
   delay_max_seconds: 0.8
   max_retries: 3
 
+health:
+  # GET /health probes both API origins and the data directories. An upstream
+  # probe is reused for ttl_seconds, so frequent polling costs the API little; it
+  # gets timeout_seconds and one attempt per call, and the service reports
+  # degraded when the data filesystem has less than min_free_mb free.
+  ttl_seconds: 60
+  timeout_seconds: 6
+  min_free_mb: 200
+
 search:
   sport: pickleball         # sport key to price (see `alobo-bot sports`)
   default_place: Hà Nội     # used when neither --place nor --lat/--lng is given

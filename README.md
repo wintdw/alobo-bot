@@ -216,6 +216,8 @@ place, explicit), `--lat/--lng/--radius`, `--date YYYY-MM-DD`, `--from HH:MM`,
 | GET | `/report.json` | JSON snapshot of the last run |
 | GET | `/status` | service state and monitoring page: busy, last run, last error, traffic, clients, searches and reports |
 | GET | `/status.json` | the same counters as JSON, for scraping or alerting |
+| GET | `/health` | readiness: both API origins, writable data dirs, state files and free disk (200 healthy, 503 when a search cannot work) |
+| GET | `/healthz` | alias of `/health`, for orchestrators that probe it by default |
 
 ```bash
 curl -X POST 'localhost:8085/find?place=H%C3%A0%20N%E1%BB%99i&from=18:00&to=21:00'
@@ -240,6 +242,20 @@ totals and keeps the warm results of searches run in the last few minutes instea
 of starting from zero. Only the process uptime resets. The files live on the same
 host bind mount as the reports, so nothing is lost when the process is replaced.
 
+`GET /health` answers the machine-facing question instead: can this process serve
+a search right now? It probes both API origins with the two cheapest calls (the
+sport list, and the "near me" branch list — which also proves the signing key,
+origins and response decryption still work), checks that the reports, raw and
+state directories are writable, that the durable state files parse, and that the
+data filesystem has free space. The body is JSON: `status` is `ok`, `degraded`
+(the sport list, the state files or the disk is the problem) or `down`, and only
+`down` answers `503` — exactly when a search cannot work. The upstream probe is
+reused for `health.ttl_seconds` (a minute by default), so polling costs the API at
+most two calls per window, and health requests are not counted in the `/status`
+traffic. The Docker
+image carries a `HEALTHCHECK` against it, so `docker ps` shows `(unhealthy)` for a
+container that is up but useless.
+
 
 ## Configuration
 
@@ -254,8 +270,10 @@ page always uses this, only `find --target` overrides it),
 `search.areas` (the districts in the Area dropdown), `search.presets` (saved
 places: name -> `{lat, lng}`, the dropdown's **Preset** group and usable as
 `--place` / `--preset`), `report.dir`, `raw.dir`, `state.dir` (the durable
-`/status` counters and recent-search cache, resumed across restarts). There are
-**no user secrets** — see below.
+`/status` counters and recent-search cache, resumed across restarts), and
+`health.ttl_seconds` / `health.timeout_seconds` / `health.min_free_mb` (the
+`/health` probe's reuse window, per-call timeout and low-disk threshold). There
+are **no user secrets** — see below.
 
 ## How the API is called
 

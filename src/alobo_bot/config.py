@@ -70,6 +70,13 @@ DEFAULTS: dict[str, Any] = {
     },
     "report": {"dir": "data/reports"},
     "raw": {"dir": "data/raw"},
+    # GET /health probes: how long an upstream probe is reused, the per-call
+    # timeout it allows, and the free disk below which it reports degraded.
+    "health": {
+        "ttl_seconds": 60,
+        "timeout_seconds": 6,
+        "min_free_mb": 200,
+    },
     # Durable state that survives a restart: the /status counters and the
     # recent-search result cache. Lives on the host so a container bounce resumes
     # rather than starting from zero (bound the same way as reports/raw).

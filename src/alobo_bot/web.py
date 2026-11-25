@@ -29,6 +29,15 @@ from typing import Any
 from . import __version__
 from .api import AloboClient, ApiError
 from .config import load_config, validate
+from .health import (
+    UpstreamProbe,
+    build_report,
+    check_disk,
+    check_state,
+    check_storage,
+    health_api_config,
+    probe_coordinates,
+)
 from .metrics import Metrics
 from .parsing import parse_dt
 from .pricing import ClockError, parse_clock
@@ -103,6 +112,10 @@ def request_client_ip(request: Any) -> str:
 # The failures a search can raise, and the message/status each maps to. Kept in one
 # place so ``/``, ``/results`` and ``/find`` cannot drift apart.
 SEARCH_FAILURES = (ClockError, ValueError, ApiError, RuntimeError)
+
+# Health probes are infrastructure chatter, not traffic: a monitor polling every
+# 30 seconds would otherwise dominate the request counters behind /status.
+HEALTH_PATHS = frozenset({"/health", "/healthz"})
 
 
 def search_error(exc: Exception) -> tuple[str, int]:
@@ -249,7 +262,19 @@ def create_app() -> Any:
     cfg = load_config()
     validate(cfg)
     report_dir = pathlib.Path(cfg["report"]["dir"])
+    raw_dir = pathlib.Path(cfg["raw"]["dir"])
     state_dir = pathlib.Path(cfg["state"]["dir"])
+    health_cfg = cfg["health"]
+    # The health probe's client is tuned separately (one fast attempt) so a dead
+    # API is reported in seconds instead of the search client's retry-and-backoff.
+    probe_latitude, probe_longitude = probe_coordinates(cfg)
+    upstream_probe = UpstreamProbe(
+        AloboClient(health_api_config(cfg, health_cfg["timeout_seconds"])),
+        latitude=probe_latitude,
+        longitude=probe_longitude,
+        ttl_seconds=health_cfg["ttl_seconds"],
+    )
+    min_free_bytes = int(float(health_cfg["min_free_mb"]) * 1024 * 1024)
     raw_areas = cfg["search"].get("areas") or []
     areas = [str(area) for area in raw_areas] if isinstance(raw_areas, list) else []
     presets = presets_config(cfg)
@@ -309,8 +334,11 @@ def create_app() -> Any:
 
         The request *completing* is what is recorded, so the counters a page reads
         are the ones before its own request is added (a status view does not count
-        itself until it has been rendered).
+        itself until it has been rendered). Health probes are skipped entirely:
+        they are a monitor talking, not a visitor.
         """
+        if request.url.path in HEALTH_PATHS:
+            return await call_next(request)
         client_ip = request_client_ip(request)
         metrics.begin_request()
         started = time.perf_counter()
@@ -442,6 +470,49 @@ def create_app() -> Any:
         if latest is None:
             return JSONResponse({"detail": "no report yet"}, status_code=404)
         return Response(latest.read_bytes(), media_type="application/json")
+
+    def _health_report() -> dict:
+        """Run the checks and assemble the report (runs on a worker thread)."""
+        snapshot = metrics.snapshot(clients=0)
+        return build_report(
+            upstream=upstream_probe.check(),
+            storage=check_storage({
+                "reports": report_dir,
+                "raw": raw_dir,
+                "state": state_dir,
+            }),
+            disk=check_disk(state_dir, min_free_bytes=min_free_bytes),
+            state=check_state(state_dir),
+            service={
+                "uptimeSeconds": round(snapshot.uptime_seconds, 1),
+                "busy": snapshot.busy,
+                "searches": snapshot.searches,
+                "searchFailures": snapshot.search_failures,
+                "lastRun": (
+                    None if snapshot.last_run is None
+                    else snapshot.last_run.isoformat(timespec="seconds")
+                ),
+                "lastError": snapshot.last_error,
+            },
+        )
+
+    @app.get("/health")
+    async def health_endpoint() -> Response:
+        """Can this process serve a search right now? JSON; 200 healthy, 503 down.
+
+        Checks the two API origins (so expired build keys, an unreachable backend
+        or a wrong signing clock are caught), that the data directories are
+        writable (a root-owned bind mount otherwise only fails on the next write),
+        the durable state files, and free disk space. The upstream probe runs on a
+        worker thread and is reused for a short window, so polling is cheap.
+        """
+        report = await asyncio.to_thread(_health_report)
+        return JSONResponse(report, status_code=report["httpStatus"])
+
+    @app.get("/healthz")
+    async def healthz_endpoint() -> Response:
+        """Alias for /health: the path most orchestrators probe by default."""
+        return await health_endpoint()
 
     @app.get("/status", response_class=HTMLResponse)
     def status_page() -> Response:
